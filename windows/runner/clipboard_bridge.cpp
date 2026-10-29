@@ -155,7 +155,7 @@ ClipboardBridge::ClipboardBridge(HWND window, flutter::BinaryMessenger* messenge
         if (value.size() > 262144) { result->Error("storage", "Storage value too large."); return; }
         DATA_BLOB input{static_cast<DWORD>(value.size()),
           reinterpret_cast<BYTE*>(const_cast<char*>(value.data()))}, output{};
-        if (!CryptProtectData(&input, L"LocalClipboard", nullptr, nullptr, nullptr,
+        if (!CryptProtectData(&input, L"Hopboard", nullptr, nullptr, nullptr,
             CRYPTPROTECT_UI_FORBIDDEN, &output)) {
           result->Error("storage", "Could not encrypt private storage."); return;
         }
@@ -183,7 +183,7 @@ ClipboardBridge::ClipboardBridge(HWND window, flutter::BinaryMessenger* messenge
       tray_.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
       tray_.uCallbackMessage = kTrayMessage;
       tray_.hIcon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_APP_ICON));
-      wcscpy_s(tray_.szTip, L"LocalClipboard");
+      wcscpy_s(tray_.szTip, L"Hopboard");
       tray_ready_ = Shell_NotifyIconW(NIM_ADD, &tray_) != FALSE;
       NotifyIpInterfaceChange(AF_INET, NetworkChanged, window_, FALSE,
         &network_notification_);
@@ -254,7 +254,7 @@ ClipboardBridge::ClipboardBridge(HWND window, flutter::BinaryMessenger* messenge
       const auto* status = StringArg(args, "status");
       if (!paused || !status) { result->Error("arguments", "Tray state is required."); return; }
       paused_ = *paused;
-      const auto tip = Wide("LocalClipboard - " + *status);
+      const auto tip = Wide("Hopboard - " + *status);
       wcsncpy_s(tray_.szTip, tip.c_str(), _TRUNCATE);
       if (tray_ready_) Shell_NotifyIconW(NIM_MODIFY, &tray_);
       result->Success();
@@ -308,7 +308,7 @@ std::optional<LRESULT> ClipboardBridge::Handle(UINT message, WPARAM, LPARAM lpar
     if (lparam == WM_LBUTTONUP || lparam == WM_LBUTTONDBLCLK) Show();
     if (lparam == WM_RBUTTONUP) {
       HMENU menu = CreatePopupMenu();
-      AppendMenuW(menu, MF_STRING, 1, L"Open LocalClipboard");
+      AppendMenuW(menu, MF_STRING, 1, L"Open Hopboard");
       AppendMenuW(menu, MF_STRING, 2, paused_ ? L"Resume sharing" : L"Pause sharing");
       AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
       AppendMenuW(menu, MF_STRING, 3, L"Quit");

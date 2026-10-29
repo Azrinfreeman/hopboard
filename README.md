@@ -1,6 +1,18 @@
-# LocalClipboard
+# Hopboard
 
-Share plain text between trusted devices on the same Wi-Fi. No account, cloud server, or internet connection is needed. Version 0.1.2 is a development build; physical phone testing and the reliability gates in [IMPLEMENTATION.md](IMPLEMENTATION.md) are required before public release.
+**Copy on one device. Paste on another. Nothing leaves your Wi-Fi.**
+
+Hopboard moves text between your own devices over your local network. It needs no account, cloud server or internet connection. Devices pair once with a six-digit code and the host approves each one. Shared text lives in memory for five minutes and is never written to disk.
+
+**Security design**
+
+- **Pairing:** the six-digit code is verified with SRP-6a, so the code itself is never sent over the network. The exchange is bound to the host's TLS certificate, so a device pretending to be the host fails.
+- **Connections:** TLS 1.2+ with certificate pinning, length-limited messages, and per-device rate limits.
+- **Discovery:** devices find each other with mDNS, but discovery is never trusted on its own; the pinned certificate decides.
+- **Clipboard privacy:** copies that password managers mark as private are never sent automatically.
+- **Tested:** automated tests cover real TLS connections and attack cases such as spoofed hosts, guessed codes and connection floods.
+
+Built with Flutter and Dart for Windows and Android (iPhone source included, not yet built). Version 0.1.2 is a development build; physical phone testing and the reliability gates in [IMPLEMENTATION.md](IMPLEMENTATION.md) are required before public release. This code has not had an independent security audit. The Windows installer is unsigned, so Windows SmartScreen will warn when you run it.
 
 ## Try it
 

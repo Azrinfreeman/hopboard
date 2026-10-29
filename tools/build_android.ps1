@@ -22,10 +22,10 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Android build failed.' }
     $output = Join-Path $workspace 'dist'
     New-Item -ItemType Directory -Path $output -Force | Out-Null
-    $apk = Join-Path $output 'LocalClipboard-Android-arm64.apk'
+    $apk = Join-Path $output 'Hopboard-Android-arm64.apk'
     Copy-Item -LiteralPath 'build/app/outputs/flutter-apk/app-arm64-v8a-release.apk' -Destination $apk -Force
     $checksum = (Get-FileHash -LiteralPath $apk -Algorithm SHA256).Hash.ToLowerInvariant()
-    Set-Content -LiteralPath "$apk.sha256" -Value "$checksum  LocalClipboard-Android-arm64.apk" -Encoding ascii
+    Set-Content -LiteralPath "$apk.sha256" -Value "$checksum  Hopboard-Android-arm64.apk" -Encoding ascii
     Write-Output "Created $apk (development signing key)"
 } finally {
     $env:ANDROID_HOME = $previousSdk
