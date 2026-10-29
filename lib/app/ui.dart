@@ -470,7 +470,7 @@ class ClipboardApp extends StatelessWidget {
   final AppController controller;
   @override
   Widget build(BuildContext context) => MaterialApp(
-    title: 'LocalClipboard',
+    title: 'Hopboard',
     debugShowCheckedModeBanner: false,
     theme: appTheme(),
     darkTheme: appTheme(brightness: Brightness.dark),
@@ -621,7 +621,7 @@ class _ClipboardHomeState extends State<ClipboardHome>
         const SizedBox(width: 10),
         const Flexible(
           child: Text(
-            'LocalClipboard',
+            'Hopboard',
             style: TextStyle(
               fontSize: 16,
               fontWeight: FontWeight.w600,
@@ -936,7 +936,7 @@ class _ClipboardHomeState extends State<ClipboardHome>
               Padding(
                 padding: const EdgeInsets.only(top: 24),
                 child: Text(
-                  'Closing this window keeps LocalClipboard in the system tray. Choose Quit in the tray menu to stop it.',
+                  'Closing this window keeps Hopboard in the system tray. Choose Quit in the tray menu to stop it.',
                   style: TextStyle(
                     color: _Palette.of(context).secondary,
                     fontSize: 13,
@@ -1141,7 +1141,7 @@ class _ClipboardHomeState extends State<ClipboardHome>
             subtitle: Text(
               Platform.isWindows
                   ? 'Copy text in any app. Your connected devices receive it automatically.'
-                  : 'Sync clipboard changes while LocalClipboard is open and focused.',
+                  : 'Sync clipboard changes while Hopboard is open and focused.',
               style: TextStyle(
                 fontSize: 13,
                 color: _Palette.of(context).secondary,

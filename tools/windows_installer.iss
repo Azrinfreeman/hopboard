@@ -5,19 +5,19 @@
 
 [Setup]
 AppId={{B20BE21D-731B-4DE3-9574-4495880285C0}
-AppName=LocalClipboard
+AppName=Hopboard
 AppVersion={#AppVersion}
-AppPublisher=LocalClipboard
+AppPublisher=Hopboard
 VersionInfoVersion={#FileVersion}
 DefaultDirName={localappdata}\Programs\LocalClipboard
-DefaultGroupName=LocalClipboard
+DefaultGroupName=Hopboard
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
 OutputDir={#OutputDir}
-OutputBaseFilename=LocalClipboard-Setup-{#AppVersion}-x64
+OutputBaseFilename=Hopboard-Setup-{#AppVersion}-x64
 SetupIconFile={#AppIcon}
 UninstallDisplayIcon={app}\local_clipboard.exe
 Compression=lzma2
@@ -35,12 +35,12 @@ Name: desktopicon; Description: "Create a &desktop shortcut"; GroupDescription: 
 Source: "{#BundleDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{autoprograms}\LocalClipboard"; Filename: "{app}\local_clipboard.exe"; WorkingDir: "{app}"
-Name: "{autodesktop}\LocalClipboard"; Filename: "{app}\local_clipboard.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{autoprograms}\Hopboard"; Filename: "{app}\local_clipboard.exe"; WorkingDir: "{app}"
+Name: "{autodesktop}\Hopboard"; Filename: "{app}\local_clipboard.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\local_clipboard.exe"; WorkingDir: "{app}"; Description: "Open LocalClipboard"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\local_clipboard.exe"; WorkingDir: "{app}"; Description: "Open Hopboard"; Flags: nowait postinstall skipifsilent
 
 [Messages]
-SetupAppRunningError=LocalClipboard is running. Choose Quit from its system tray menu, then click OK to continue. Closing its window keeps it running.
-UninstallAppRunningError=LocalClipboard is running. Choose Quit from its system tray menu, then click OK to continue.
+SetupAppRunningError=Hopboard is running. Choose Quit from its system tray menu, then click OK to continue. Closing its window keeps it running.
+UninstallAppRunningError=Hopboard is running. Choose Quit from its system tray menu, then click OK to continue.

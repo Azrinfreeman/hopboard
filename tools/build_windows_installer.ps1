@@ -59,7 +59,7 @@ $output = Join-Path $workspace 'dist'
 New-Item -ItemType Directory -Path $output -Force | Out-Null
 & $InnoCompiler "/DBundleDir=$stage" "/DAppVersion=$version" "/DFileVersion=$fileVersion" "/DOutputDir=$output" "/DAppIcon=$(Join-Path $workspace 'windows/runner/resources/app_icon.ico')" (Join-Path $PSScriptRoot 'windows_installer.iss')
 if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed.' }
-$installer = Join-Path $output "LocalClipboard-Setup-$version-x64.exe"
+$installer = Join-Path $output "Hopboard-Setup-$version-x64.exe"
 $checksum = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
 Set-Content -LiteralPath "$installer.sha256" -Value "$checksum  $(Split-Path -Leaf $installer)" -Encoding ascii
 Write-Output "Created $installer"

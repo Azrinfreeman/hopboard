@@ -92,7 +92,7 @@ class _BootstrapState extends State<_Bootstrap> {
                         Text(
                           snapshot.hasError
                               ? 'Could not open secure storage'
-                              : 'Opening LocalClipboard…',
+                              : 'Opening Hopboard…',
                           style: const TextStyle(
                             fontSize: 20,
                             fontWeight: FontWeight.w600,

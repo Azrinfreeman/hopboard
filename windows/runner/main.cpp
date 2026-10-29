@@ -14,7 +14,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   const std::unique_ptr<void, decltype(&CloseHandle)> mutex_guard(instance_mutex, CloseHandle);
   if (!instance_mutex) return EXIT_FAILURE;
   if (mutex_error == ERROR_ALREADY_EXISTS) {
-    HWND existing = FindWindowW(L"FLUTTER_RUNNER_WIN32_WINDOW", L"LocalClipboard");
+    HWND existing = FindWindowW(L"FLUTTER_RUNNER_WIN32_WINDOW", L"Hopboard");
     if (existing) {
       ShowWindow(existing, SW_RESTORE);
       SetForegroundWindow(existing);
@@ -41,7 +41,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   FlutterWindow window(project);
   Win32Window::Point origin(10, 10);
   Win32Window::Size size(1100, 800);
-  if (!window.Create(L"LocalClipboard", origin, size)) {
+  if (!window.Create(L"Hopboard", origin, size)) {
     return EXIT_FAILURE;
   }
   window.SetQuitOnClose(true);

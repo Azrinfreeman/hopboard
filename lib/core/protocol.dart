@@ -132,7 +132,7 @@ class Invitation {
         data['app'] != 'localclipboard' ||
         data['v'] != protocolVersion) {
       throw const FormatException(
-        'This is not a supported LocalClipboard invitation.',
+        'This is not a supported Hopboard invitation.',
       );
     }
     final port = data['port'];
