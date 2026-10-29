@@ -1,6 +1,6 @@
 # LocalClipboard design contract
 
-Apple-inspired system utility, implemented in Flutter. The original brief is [UI_REVAMP_IMPLEMENTATION.md](docs/UI_REVAMP_IMPLEMENTATION.md); the approved dashboard revision is [DASHBOARD_LAYOUT_REVAMP_PLAN.md](docs/DASHBOARD_LAYOUT_REVAMP_PLAN.md).
+Apple-inspired system utility, implemented in Flutter.
 
 ## Product hierarchy
 
