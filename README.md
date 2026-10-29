@@ -14,6 +14,19 @@ Hopboard moves text between your own devices over your local network. It needs n
 
 Built with Flutter and Dart for Windows and Android (iPhone source included, not yet built). Version 0.1.2 is a development build; physical phone testing and the reliability gates in [IMPLEMENTATION.md](IMPLEMENTATION.md) are required before public release. This code has not had an independent security audit. The Windows installer is unsigned, so Windows SmartScreen will warn when you run it.
 
+## Download
+
+Get the Windows installer from the [latest release](https://github.com/Azrinfreeman/hopboard/releases/latest). It is an unsigned development build, so Windows SmartScreen will warn; check the download against the attached `.sha256` file. An Android APK is not on the release yet.
+
+## What's new in 0.1.2
+
+- **Renamed to Hopboard** and a redesigned interface with light, dark and high-contrast themes.
+- **Private copies stay private:** text that a password manager marks as private is never sent automatically. Text Hopboard places on the Windows clipboard is kept out of Win+V history and Cloud Clipboard.
+- **Harder to spoof or disrupt:** a fake nearby announcement can no longer redirect or unpair a saved host. Connections that have not logged in are capped, and pairing-code attempts count only when a code is submitted, with at most three per device.
+- **Clearer approvals:** the host sees the requesting device's address and a warning when a request would replace a saved device.
+- **Fewer surprises:** a tray notice names the device that replaced your clipboard, the host stays on the network adapter you chose, and a full session no longer makes a device forget its host.
+- **Recovery:** if secure storage cannot be read, the startup screen offers **Reset this device**.
+
 ## Try it
 
 ### Windows
@@ -38,7 +51,7 @@ PC-to-PC pairing needs no camera or JSON. **Copy code** copies only the six digi
 
 ### Android
 
-Use `dist/LocalClipboard-Android-arm64.apk` on a modern ARM64 phone. Other architecture builds are in `build/app/outputs/flutter-apk/`. Allow installation from the application used to open the APK. Grant local-network access when joining or hosting; camera access is needed only to scan.
+Use `dist/LocalClipboard-Android-arm64.apk` (built before the rename, so it still shows the previous name; rebuild with `tools/build_android.ps1` for a Hopboard build) on a modern ARM64 phone. Other architecture builds are in `build/app/outputs/flutter-apk/`. Allow installation from the application used to open the APK. Grant local-network access when joining or hosting; camera access is needed only to scan.
 
 This optimized development APK uses the Android debug signing key. Configure a private release key before distribution or publishing.
 
@@ -106,6 +119,12 @@ open ios/Runner.xcworkspace
 ```
 
 The unsigned command checks compilation; a signed archive/device run requires provisioning. iOS integration has not been compiled in this Windows environment.
+
+## Status and limits
+
+- Checked on Windows with Flutter 3.47.6: `flutter analyze` is clean and all 50 automated tests pass, including real TLS connections and attack cases.
+- Not yet verified: physical Android phones, iPhone (source only), and the Windows tray notification and clipboard-privacy checks on a range of password managers.
+- No independent security audit has been done. Treat Hopboard as a learning and portfolio project, not a vetted security product.
 
 ## Code and verification
 
