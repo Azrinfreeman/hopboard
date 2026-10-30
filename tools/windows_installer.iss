@@ -44,3 +44,6 @@ Filename: "{app}\local_clipboard.exe"; WorkingDir: "{app}"; Description: "Open H
 [Messages]
 SetupAppRunningError=Hopboard is running. Choose Quit from its system tray menu, then click OK to continue. Closing its window keeps it running.
 UninstallAppRunningError=Hopboard is running. Choose Quit from its system tray menu, then click OK to continue.
+
+[UninstallDelete]
+Type: filesandordirs; Name: "{localappdata}\Hopboard\Received"

@@ -35,7 +35,7 @@ foreach ($required in @('local_clipboard.exe', 'flutter_windows.dll', 'data/app.
 $metadata = (Get-Item -LiteralPath $executable).VersionInfo
 $version = $metadata.ProductVersion -replace '\+.*$', ''
 $fileVersion = '{0}.{1}.{2}.{3}' -f $metadata.FileMajorPart, $metadata.FileMinorPart, $metadata.FileBuildPart, $metadata.FilePrivatePart
-if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Unexpected executable version.' }
+if ($version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$') { throw 'Unexpected executable version.' }
 
 if (-not $VCRuntimeDirectory) {
     $candidates = Get-ChildItem -Path "$env:ProgramFiles\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT" -Directory -ErrorAction SilentlyContinue |

@@ -2,7 +2,10 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
+import 'content.dart';
+
 const protocolVersion = 1;
+const applicationVersion = '0.2.0-dev';
 const maxTextBytes = 64 * 1024;
 const maxFrameBytes = 512 * 1024;
 const itemLifetime = Duration(minutes: 5);
@@ -51,16 +54,20 @@ class ClipItem {
     required this.sequence,
     required this.senderId,
     required this.senderName,
-    required this.text,
+    String? text,
+    ClipPayload? payload,
     required Duration lifetime,
-  }) : _remaining = lifetime,
+  }) : payload = payload ?? ClipPayload.fromJson({'text': text}),
+       _remaining = lifetime,
        _age = Stopwatch()..start();
 
   final String id;
   final int sequence;
   final String senderId;
   final String senderName;
-  final String text;
+  final ClipPayload payload;
+  String get text => payload.text ?? '';
+  String get kind => payload.kind;
   final Duration _remaining;
   final Stopwatch _age;
   Duration get remaining => _remaining - _age.elapsed;
@@ -71,21 +78,23 @@ class ClipItem {
     'seq': sequence,
     'senderId': senderId,
     'senderName': senderName,
-    'text': text,
+    ...payload.toJson(),
     'remainingMs': remaining.inMilliseconds.clamp(
       0,
-      itemLifetime.inMilliseconds,
+      (kind == 'files' ? fileLifetime : itemLifetime).inMilliseconds,
     ),
   };
 
   factory ClipItem.fromJson(Map<String, dynamic> data) {
+    final payload = ClipPayload.fromJson(data);
+    final lifetime = payload.kind == 'files' ? fileLifetime : itemLifetime;
     final seq = data['seq'];
     final ms = data['remainingMs'];
     if (seq is! int ||
         seq < 1 ||
         ms is! int ||
         ms < 0 ||
-        ms > itemLifetime.inMilliseconds) {
+        ms > lifetime.inMilliseconds) {
       throw const FormatException('Invalid item lifetime or sequence.');
     }
     return ClipItem(
@@ -93,7 +102,7 @@ class ClipItem {
       sequence: seq,
       senderId: field(data, 'senderId'),
       senderName: field(data, 'senderName', max: 64),
-      text: validText(data['text']),
+      payload: payload,
       lifetime: Duration(milliseconds: ms),
     );
   }

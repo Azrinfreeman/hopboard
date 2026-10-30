@@ -65,9 +65,9 @@ Uint8List encodeFrame(Map<String, dynamic> message) {
 }
 
 class FramedConnection {
-  FramedConnection(this.socket) {
+  FramedConnection(this.socket, {Stream<Uint8List>? input}) {
     socket.setOption(SocketOption.tcpNoDelay, true);
-    _subscription = socket.listen(
+    _subscription = (input ?? socket).listen(
       (chunk) {
         try {
           // Do not queue unbounded decoded messages from a flooding peer.

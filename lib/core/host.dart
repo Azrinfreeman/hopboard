@@ -10,6 +10,9 @@ import 'identity.dart';
 import 'pair_code.dart';
 import 'protocol.dart';
 import 'session_engine.dart';
+import 'content.dart';
+import 'transfer.dart';
+import 'version.dart';
 
 class PairRequest {
   PairRequest(this.id, this.name, {this.address, this.replaces});
@@ -35,21 +38,38 @@ class _Peer {
   Duration lastSeen;
   String? id;
   bool pairing = false;
+  bool content = false;
+  String? appVersion;
   PairCodeServer? codePair;
   Timer? authenticationTimer;
 }
 
 class LocalHost {
-  LocalHost(this.identity, this.trust, this.name);
+  LocalHost(this.identity, this.trust, this.name, {this.content = false});
+  final bool content;
   final Identity identity;
   final TrustStore trust;
   final String name;
   final engine = SessionEngine();
+  late final transfers = TransferHost(
+    current: () => engine.item,
+    online: (id) =>
+        id == identity.id ||
+        _peers.any((p) => p.id == id && p.content && !p.connection.closed),
+    post: (id, message) {
+      for (final p in _peers.where((p) => p.id == id)) {
+        p.connection.post(message);
+      }
+    },
+    hostId: identity.id,
+  );
+  final _pendingSockets = <SecureSocket>{};
   final events = StreamController<Map<String, dynamic>>.broadcast();
   final pairing = StreamController<PairRequest>.broadcast();
   final _peers = <_Peer>{};
   final _clock = Stopwatch()..start();
   final _receipts = <String, String>{};
+  final _progress = <String, int>{};
   SecureServerSocket? _server;
   Timer? _heartbeat;
   Timer? _expiry;
@@ -65,13 +85,16 @@ class LocalHost {
 
   Future<void> start(String interface, [int port = defaultPort]) async {
     address = interface;
+    transfers.onCacheChange = _state;
     engine.onChange = () {
+      transfers.reset();
       _receipts.clear();
+      _progress.clear();
       _expiry?.cancel();
       if (engine.item != null) {
         _expiry = Timer(engine.item!.remaining, engine.clear);
       }
-      _broadcast(engine.snapshot());
+      _state();
       _members();
     };
     _server = await SecureServerSocket.bind(
@@ -101,6 +124,31 @@ class LocalHost {
     });
   }
 
+  Map<String, dynamic> _snapshot(bool content) {
+    final snapshot = engine.snapshot(content: content);
+    final item = engine.item;
+    if (content && item != null && !item.payload.isText) {
+      snapshot['availability'] = !item.payload.cached
+          ? 'senderOnly'
+          : item.payload.streams.keys.every(
+              (e) => transfers.blobs.get(item.id, e) != null,
+            )
+          ? 'ready'
+          : 'uploading';
+    }
+    return snapshot;
+  }
+
+  void _state() {
+    if (_stopped) return;
+    events.add(_snapshot(content));
+    for (final p in _peers.where((p) => p.id != null)) {
+      p.connection.post(_snapshot(p.content));
+    }
+  }
+
+  void refreshContent() => _state();
+
   Invitation invite() {
     _pending?.decide(false);
     _invite = randomSecret();
@@ -123,6 +171,7 @@ class LocalHost {
 
   Future<void> rebind(String interface) async {
     cancelInvite();
+    transfers.reset(clearCache: false);
     final previousPort = port;
     await _server?.close();
     for (final peer in _peers.toList()) {
@@ -154,18 +203,70 @@ class LocalHost {
 
   void _accept(SecureSocket socket) {
     final address = socket.remoteAddress.address;
-    // Separate budgets keep unauthenticated sockets, especially from one
-    // address, from occupying the slots trusted devices need to reconnect.
     final unauthenticated = _peers.where((p) => p.id == null);
     if (_stopped ||
-        _peers.length >= 16 ||
         !isLocalAddress(address) ||
-        unauthenticated.length >= 8 ||
-        unauthenticated.where((p) => p.address == address).length >= 3) {
+        _pendingSockets.length + unauthenticated.length >= 8 ||
+        _pendingSockets
+                    .where((s) => s.remoteAddress.address == address)
+                    .length +
+                unauthenticated.where((p) => p.address == address).length >=
+            3) {
       socket.destroy();
       return;
     }
-    final peer = _Peer(FramedConnection(socket), address, _clock.elapsed);
+    _pendingSockets.add(socket);
+    unawaited(
+      _route(socket)
+          .catchError((Object _) {
+            socket.destroy();
+          })
+          .whenComplete(() {
+            _pendingSockets.remove(socket);
+          }),
+    );
+  }
+
+  Future<void> _route(SecureSocket socket) async {
+    socket.setOption(SocketOption.tcpNoDelay, true);
+    final reader = DataReader(socket);
+    var control = false;
+    try {
+      final first = await reader.header().timeout(const Duration(seconds: 5));
+      _pendingSockets.remove(socket);
+      if (_stopped) return;
+      if (first['type'] == 'data') {
+        final id = field(first, 'deviceId');
+        final credential = field(first, 'credential');
+        if (trust.devices[id]?.credentialHash !=
+            sha256.convert(utf8.encode(credential)).toString()) {
+          throw SessionException('Device access revoked.', 'unauthorized');
+        }
+        await transfers.accept(socket, reader, first);
+      } else {
+        if (_peers.length >= 16) return;
+        control = true;
+        _acceptControl(socket, reader, first);
+      }
+    } finally {
+      if (!control) {
+        socket.destroy();
+        await reader.cancel();
+      }
+    }
+  }
+
+  void _acceptControl(
+    SecureSocket socket,
+    DataReader reader,
+    Map<String, dynamic> first,
+  ) {
+    final address = socket.remoteAddress.address;
+    final peer = _Peer(
+      FramedConnection(socket, input: reader.rest()),
+      address,
+      _clock.elapsed,
+    );
     _peers.add(peer);
     peer.authenticationTimer = Timer(const Duration(seconds: 5), () {
       if (peer.id == null && !peer.pairing) peer.connection.close();
@@ -182,8 +283,16 @@ class LocalHost {
       onDone: () {
         peer.authenticationTimer?.cancel();
         _peers.remove(peer);
+        if (peer.id != null && !_peers.any((p) => p.id == peer.id)) {
+          transfers.forget(peer.id!);
+        }
         if (!_stopped) _members();
       },
+    );
+    unawaited(
+      _handle(peer, first).catchError((Object _) {
+        peer.connection.close();
+      }),
     );
   }
 
@@ -228,6 +337,12 @@ class LocalHost {
         for (final other in _peers.where((p) => p.id == id).toList()) {
           other.connection.close();
         }
+        peer.content =
+            message['features'] is List &&
+            (message['features'] as List).contains(contentFeature);
+        peer.appVersion = message['appVersion'] is String
+            ? field(message, 'appVersion', max: 64)
+            : null;
         peer.id = id;
         peer.authenticationTimer?.cancel();
         peer.connection.post({
@@ -235,16 +350,59 @@ class LocalHost {
           'epoch': engine.epoch,
           'hostId': identity.id,
           'hostName': name,
+          'features': [contentFeature],
+          'appVersion': applicationVersion,
         });
-        peer.connection.post(engine.snapshot());
+        peer.connection.post(_snapshot(peer.content));
+        if (!peer.content &&
+            (peer.appVersion == null ||
+                (compareVersions(peer.appVersion!, applicationVersion) ?? -1) <
+                    0)) {
+          peer.connection.post({
+            'type': 'error',
+            'code': 'update',
+            'message':
+                '$name can share images. Update Hopboard on this device to receive them.',
+          });
+        }
         _members();
         return;
       }
       final id = peer.id!;
       switch (message['type']) {
         case 'publish':
+          if (!peer.content &&
+              message['kind'] != null &&
+              message['kind'] != 'text') {
+            throw SessionException('Content capability required.', 'protocol');
+          }
           final ack = engine.publish(id, trust.devices[id]!.name, message);
           peer.connection.post(ack);
+        case 'fetch':
+        case 'upload':
+          if (!peer.content) {
+            throw SessionException('Content capability required.', 'protocol');
+          }
+          final role = message['type'] as String;
+          final entry = message['entry'];
+          final offset = message['offset'] ?? 0;
+          if (entry is! int || offset is! int) {
+            throw const FormatException('Invalid entry.');
+          }
+          final token = transfers.issue(
+            id,
+            field(message, 'itemId'),
+            entry,
+            offset,
+            role,
+          );
+          peer.connection.post({
+            'type': '${role}Ticket',
+            'ticket': token,
+            'requestId': field(message, 'requestId', max: 64),
+          });
+        case 'cancel':
+          transfers.cancel(id, field(message, 'ticket'));
         case 'receipt':
           receipt(id, message);
         case 'ping':
@@ -261,7 +419,9 @@ class LocalHost {
         'message': error.message,
         'requestId': message['requestId'],
       });
-      if (error.code == 'conflict') peer.connection.post(engine.snapshot());
+      if (error.code == 'conflict') {
+        peer.connection.post(_snapshot(peer.content));
+      }
       if (peer.id == null) {
         await Future<void>.delayed(const Duration(milliseconds: 50));
         peer.connection.close();
@@ -411,6 +571,7 @@ class LocalHost {
     if (message['itemId'] != engine.item?.id) return;
     const statuses = {
       'available',
+      'downloading',
       'applied',
       'needsAction',
       'failed',
@@ -418,6 +579,15 @@ class LocalHost {
     };
     if (!statuses.contains(message['status'])) return;
     _receipts[id] = message['status'] as String;
+    final progress = message['progress'];
+    if (message['status'] == 'downloading' &&
+        progress is int &&
+        progress >= 0 &&
+        progress <= 100) {
+      _progress[id] = progress;
+    } else {
+      _progress.remove(id);
+    }
     _members();
   }
 
@@ -431,6 +601,9 @@ class LocalHost {
           'host': true,
           'online': true,
           'status': _receipts[identity.id] ?? 'available',
+          if (_progress.containsKey(identity.id))
+            'progress': _progress[identity.id],
+          'appVersion': applicationVersion,
         },
         for (final device in trust.devices.values)
           {
@@ -441,6 +614,21 @@ class LocalHost {
               (p) => p.id == device.id && !p.connection.closed,
             ),
             'status': _receipts[device.id] ?? 'available',
+            if (_progress.containsKey(device.id))
+              'progress': _progress[device.id],
+            'appVersion': _peers
+                .where((p) => p.id == device.id)
+                .firstOrNull
+                ?.appVersion,
+            'needsUpdate': _peers.any(
+              (p) =>
+                  p.id == device.id &&
+                  !p.content &&
+                  (p.appVersion == null ||
+                      (compareVersions(p.appVersion!, applicationVersion) ??
+                              -1) <
+                          0),
+            ),
           },
       ],
     });
@@ -470,14 +658,21 @@ class LocalHost {
       });
       peer.connection.close();
     }
+    transfers.forget(id);
     engine.forget(id);
     _receipts.remove(id);
+    _progress.remove(id);
     _members();
   }
 
   Future<void> stop() async {
     if (_stopped) return;
     _stopped = true;
+    transfers.reset();
+    transfers.blobs.reset(null);
+    for (final socket in _pendingSockets.toList()) {
+      socket.destroy();
+    }
     cancelInvite();
     _heartbeat?.cancel();
     _expiry?.cancel();

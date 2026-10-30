@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data' show BytesBuilder;
 
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -10,9 +11,15 @@ import '../core/host.dart';
 import '../core/identity.dart';
 import '../core/pair_code.dart';
 import '../core/protocol.dart';
+import '../core/content.dart';
+import '../core/image_content.dart';
+import '../core/file_content.dart';
+import '../core/zip_content.dart';
+import '../core/version.dart';
 import '../platform/clipboard_bridge.dart';
 import '../platform/discovery.dart';
 import '../platform/secure_vault.dart';
+import '../platform/update_service.dart';
 
 /// Stored identity or trust could not be read, e.g. after a password reset
 /// made DPAPI data unreadable or the Android Keystore key was invalidated.
@@ -24,10 +31,18 @@ class StorageFailure implements Exception {
 }
 
 class _Publication {
-  _Publication(this.message, this.automatic, this.revision);
+  _Publication(
+    this.message,
+    this.automatic,
+    this.revision,
+    this.snapshot,
+    this.files,
+  );
   final Map<String, dynamic> message;
   final bool automatic;
   final int? revision;
+  final ClipboardSnapshot snapshot;
+  final FileContent? files;
   final age = Stopwatch()..start();
 }
 
@@ -38,7 +53,14 @@ class AppController extends ChangeNotifier {
     required this.clipboard,
     required this.discovery,
     required this.preferences,
-  });
+    UpdateService? updates,
+  }) : updates = updates ?? UpdateService();
+  final UpdateService updates;
+  String? newerVersion, hostUpdateNotice;
+  bool updateDismissed = false, updateBusy = false;
+  double? updateProgress;
+  bool get updateAvailable => newerVersion != null && !updateDismissed;
+  bool get canInstallUpdate => Platform.isWindows;
   final Identity identity;
   final TrustStore trust;
   final ClipboardBridge clipboard;
@@ -51,6 +73,25 @@ class AppController extends ChangeNotifier {
   bool busy = false;
   bool connected = false;
   bool automatic = false;
+  bool automaticImages = false;
+  bool automaticFiles = false;
+  bool packagingFiles = false;
+  Future<File>? _zipPreparation;
+  bool _clearingFiles = false;
+  int fileLimit = defaultItemBytes;
+  int autoDownloadLimit = 256 * 1024 * 1024;
+  final Map<Directory, DateTime> _outgoingZips = {};
+
+  FileContent? _outgoingFiles;
+  ReceivedFiles? _receivedFiles;
+  String? _receivedFilesId;
+  Future<ReceivedFiles>? _fileDownload;
+  final Map<ReceivedFiles, DateTime> _fileCaches = {};
+  final Map<ReceivedFiles, int> _cacheRevisions = {};
+  Timer? _cacheSweep;
+  bool get filesReady => _receivedFilesId == item?.id && _receivedFiles != null;
+  bool get needsFileDownload => item?.kind == 'files' && !filesReady;
+
   bool paused = false;
   bool keepScreenAwake = false;
   bool foreground = true;
@@ -81,12 +122,28 @@ class AppController extends ChangeNotifier {
   PairRequest? pendingPair;
   ClipItem? item;
   String itemStatus = 'No text shared yet';
-  String? conflictText;
+  ClipboardSnapshot? conflictPayload;
+  String? get conflictText => conflictPayload?.text;
+  set conflictText(String? value) =>
+      conflictPayload = value == null ? null : ClipboardSnapshot(value, 0);
+  bool get hasConflict => conflictPayload != null;
+  Uint8List? _outgoingPng, _receivedPng;
+  String? _outgoingId, _receivedId;
+  Uint8List? get receivedImage => _receivedId == item?.id
+      ? _receivedPng
+      : _outgoingId == item?.id
+      ? _outgoingPng
+      : null;
+  int? imageProgress;
+  int _downloadGeneration = 0;
+  Future<Uint8List>? _download;
+  Completer<void>? _imageReady;
   List<Map<String, dynamic>> members = [];
   List<LanInterface> interfaces = [];
   StreamSubscription<Map<String, dynamic>>? _sessionSub;
   StreamSubscription<PairRequest>? _pairSub;
   StreamSubscription<void>? _clipboardSub;
+  StreamSubscription<List<String>>? _fileDropSub;
   StreamSubscription<String>? _actionSub;
   Timer? _reconnect;
   Timer? _coalesce;
@@ -136,6 +193,12 @@ class AppController extends ChangeNotifier {
       // Keep offering the reset if deletion itself failed.
       throw StorageFailure(error);
     }
+    if (Platform.isWindows) {
+      final cache = await ClipboardBridge().receiveCache();
+      await for (final entry in cache.list(followLinks: false)) {
+        await entry.delete(recursive: true);
+      }
+    }
     await (await SharedPreferences.getInstance()).remove('lastHost');
   }
 
@@ -151,8 +214,41 @@ class AppController extends ChangeNotifier {
             ? 'iPhone'
             : 'Android phone');
     automatic = canAutomatic && (preferences.getBool('automatic') ?? false);
+    fileLimit = (preferences.getInt('fileLimit') ?? defaultItemBytes).clamp(
+      16 * 1024 * 1024,
+      defaultItemBytes,
+    );
+    autoDownloadLimit =
+        (preferences.getInt('autoDownloadLimit') ?? 256 * 1024 * 1024).clamp(
+          0,
+          defaultItemBytes,
+        );
+    automaticFiles =
+        clipboard.supportsFiles &&
+        (preferences.getBool('automaticFiles') ?? false);
+    if (clipboard.supportsFiles) {
+      await clearReceivedFiles();
+      _cacheSweep = Timer.periodic(
+        const Duration(minutes: 1),
+        (_) => unawaited(
+          _sweepFileCaches().catchError((Object failure) {
+            showError(failure);
+          }),
+        ),
+      );
+    }
+    automaticImages =
+        clipboard.supportsImages &&
+        (preferences.getBool('automaticImages') ?? false);
     _lastHostId = preferences.getString('lastHost');
     await clipboard.initialize();
+    _fileDropSub = clipboard.fileDrops.stream.listen((paths) {
+      unawaited(
+        sendFiles(paths).catchError((Object failure) {
+          showError(failure);
+        }),
+      );
+    });
     _clipboardSub = clipboard.changes.stream.listen((_) {
       // Native compare-and-set protects writes until this event is classified.
       unawaited(_clipboardChanged());
@@ -250,7 +346,13 @@ class AppController extends ChangeNotifier {
     _notify();
     try {
       await leave();
-      final localHost = LocalHost(identity, trust, name);
+      final localHost = LocalHost(
+        identity,
+        trust,
+        name,
+        content: clipboard.supportsImages,
+      );
+      localHost.transfers.source = _imageSource;
       await localHost.start(interface.address, port);
       host = localHost;
       _interfaceName = interface.name;
@@ -420,7 +522,9 @@ class AppController extends ChangeNotifier {
           saved,
           address: address,
           port: port,
+          content: clipboard.supportsImages,
         );
+        client.transfers.source = _imageSource;
         _client = client;
         _awaitingSnapshot = true;
         _sessionSub = client.events.stream.listen((message) {
@@ -456,8 +560,7 @@ class AppController extends ChangeNotifier {
         await preferences.remove('lastHost');
         status = 'Connection needs attention';
         showError(failure);
-      } else if (failure is SessionException &&
-          failure.code == 'certificate') {
+      } else if (failure is SessionException && failure.code == 'certificate') {
         // A reassigned address or a spoofer answers with another certificate.
         // Keep the pairing and retry; discovery may find the real host.
         status = 'Host identity did not match · retrying';
@@ -497,7 +600,7 @@ class AppController extends ChangeNotifier {
       _resumeGuard =
           _localDirty ||
           (_observedRevision == null
-              ? snapshot.text?.isNotEmpty == true
+              ? snapshot.hasContent
               : snapshot.revision != _observedRevision);
       _observedRevision = snapshot.revision;
     } catch (_) {
@@ -510,6 +613,12 @@ class AppController extends ChangeNotifier {
     try {
       switch (message['type']) {
         case 'hello':
+          _checkVersion(message['appVersion']);
+          hostUpdateNotice =
+              message['features'] is! List ||
+                  !(message['features'] as List).contains(contentFeature)
+              ? '${selectedHost?.name ?? 'The host'} supports text only. Update Hopboard on that device to share images.'
+              : null;
           final epoch = field(message, 'epoch');
           if (_epoch != null && epoch != _epoch) {
             _cancelPublication(
@@ -530,8 +639,18 @@ class AppController extends ChangeNotifier {
           if (_displayEpoch == epoch &&
               sequence <= _displaySequence &&
               !initial) {
+            if (sequence == _displaySequence &&
+                message['availability'] == 'ready' &&
+                message['item'] is Map &&
+                (message['item'] as Map)['id'] == item?.id &&
+                _imageReady?.isCompleted == false) {
+              _imageReady!.complete();
+            }
             break;
           }
+          _cancelImageReceive();
+          _receivedPng = null;
+          _receivedId = null;
           _displayEpoch = epoch;
           _displaySequence = sequence;
           _expire?.cancel();
@@ -541,6 +660,13 @@ class AppController extends ChangeNotifier {
                   Map<String, dynamic>.from(message['item'] as Map),
                 );
           final current = item;
+          if (current?.senderId != identity.id) {
+            _outgoingId = null;
+            _outgoingPng = null;
+            _outgoingFiles = null;
+          }
+          _imageReady = Completer<void>();
+          if (message['availability'] != 'uploading') _imageReady!.complete();
           if (current == null || current.expired) {
             item = null;
             itemStatus = 'No text shared yet';
@@ -548,12 +674,25 @@ class AppController extends ChangeNotifier {
             itemStatus = 'Available in app';
             _expire = Timer(current.remaining, () {
               if (item?.id == current.id) {
+                _cancelImageReceive();
+                _outgoingPng = null;
+                _outgoingId = null;
+                _receivedPng = null;
+                _receivedId = null;
                 item = null;
                 itemStatus = 'Shared text expired';
                 _notify();
               }
             });
             if (current.senderId == identity.id) {
+              if (_pending?.files != null) {
+                _outgoingId = current.id;
+                _outgoingFiles = _pending!.files;
+              }
+              if (_pending?.snapshot.png != null) {
+                _outgoingId = current.id;
+                _outgoingPng = _pending!.snapshot.png;
+              }
               // An acknowledgement confirms publication; never write our echo back.
               final stillLocal =
                   current.id == _localPublicationItemId &&
@@ -565,7 +704,7 @@ class AppController extends ChangeNotifier {
               _receipt(current, stillLocal ? 'applied' : 'available');
             } else {
               _receipt(current, paused ? 'paused' : 'available');
-              if (automatic &&
+              if (_autoAccepts(current) &&
                   !paused &&
                   foreground &&
                   !_localDirty &&
@@ -575,14 +714,27 @@ class AppController extends ChangeNotifier {
                 _queueApply(current);
               } else {
                 if (_localDirty || _pending != null || _candidate != null) {
-                  conflictText ??=
-                      _candidate?.text ?? _pending?.message['text'] as String?;
+                  conflictPayload ??= _candidate ?? _pending?.snapshot;
                   _resumeGuard = true;
                 }
                 itemStatus = paused
                     ? 'Sharing paused'
-                    : 'Tap Copy to use received text';
+                    : current.payload.isText
+                    ? 'Tap Copy to use received text'
+                    : current.kind == 'files'
+                    ? 'Download to copy files'
+                    : 'Tap Copy to use received image';
                 _receipt(current, paused ? 'paused' : 'needsAction');
+                if (current.kind == 'files' && !paused) {
+                  unawaited(
+                    clipboard
+                        .notify(
+                          'Files available',
+                          '${current.senderName} shared ${(current.payload.totalBytes / (1024 * 1024)).toStringAsFixed(1)} MiB. Open Hopboard to download.',
+                        )
+                        .catchError((Object _) {}),
+                  );
+                }
               }
             }
           }
@@ -602,6 +754,17 @@ class AppController extends ChangeNotifier {
               _localPublicationItemId = message['itemId'] as String;
               _localPublicationRevision = publication.revision;
             }
+            if (publication.files != null) {
+              _outgoingId = message['itemId'] as String;
+              _outgoingFiles = publication.files;
+              unawaited(_uploadFiles(_outgoingId!, publication.files!));
+            }
+            if (publication.snapshot.png != null) {
+              _outgoingId = message['itemId'] as String;
+              _outgoingFiles = null;
+              _outgoingPng = publication.snapshot.png;
+              unawaited(_uploadImage(_outgoingId!, publication.snapshot.png!));
+            }
             if (publication.automatic &&
                 item?.id == message['itemId'] &&
                 publication.revision == _observedRevision &&
@@ -619,6 +782,9 @@ class AppController extends ChangeNotifier {
           members = (message['devices'] as List)
               .map((d) => Map<String, dynamic>.from(d as Map))
               .toList();
+          for (final member in members) {
+            _checkVersion(member['appVersion']);
+          }
         case 'error':
           final code = message['code'];
           final text = field(message, 'message', max: 512);
@@ -631,14 +797,14 @@ class AppController extends ChangeNotifier {
           if (message['requestId'] == _pending?.message['requestId'] &&
               _pending != null) {
             if (code == 'conflict') {
-              conflictText =
-                  _candidate?.text ?? _pending!.message['text'] as String;
+              conflictPayload = _candidate ?? _pending!.snapshot;
               _resumeGuard = true;
             }
             _cancelPublication(text);
           }
           error = text;
         case 'disconnected':
+          _cancelImageReceive();
           connected = false;
           _candidate = null;
           status = 'Connection interrupted · reconnecting';
@@ -657,6 +823,7 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> setAutomatic(bool value) async {
+    _revision++;
     automatic = value && canAutomatic;
     await preferences.setBool('automatic', automatic);
     if (automatic) {
@@ -664,13 +831,79 @@ class AppController extends ChangeNotifier {
       await _baseline();
     } else {
       _cancelPublication(null);
+      _cancelImageReceive();
     }
     _notify();
   }
 
+  void _checkVersion(Object? version) {
+    if (version is String &&
+        (compareVersions(version, applicationVersion) ?? 0) > 0 &&
+        (newerVersion == null ||
+            (compareVersions(version, newerVersion!) ?? 0) > 0)) {
+      newerVersion = version;
+      updateDismissed = false;
+    }
+  }
+
+  void dismissUpdate() {
+    updateDismissed = true;
+    hostUpdateNotice = null;
+    _notify();
+  }
+
+  Future<PreparedUpdate?> prepareUpdate() async {
+    if (updateBusy || !canInstallUpdate) return null;
+    updateBusy = true;
+    updateProgress = null;
+    _notify();
+    try {
+      final update = await updates.prepare(
+        progress: (value) {
+          updateProgress = value;
+          _notify();
+        },
+      );
+      if (update == null) {
+        error = 'This device already has the latest published version.';
+      }
+      return update;
+    } finally {
+      updateBusy = false;
+      updateProgress = null;
+      _notify();
+    }
+  }
+
+  Future<void> installUpdate(PreparedUpdate update) async {
+    await leave();
+    await updates.install(update);
+  }
+
+  Future<void> setAutomaticImages(bool value) async {
+    automaticImages = value && clipboard.supportsImages;
+    await preferences.setBool('automaticImages', automaticImages);
+    _cancelImageReceive();
+    _cancelPublication(null);
+    _revision++;
+    await _baseline();
+    _notify();
+  }
+
+  bool _autoAccepts(ClipItem current) =>
+      automatic &&
+      (current.payload.isText ||
+          automaticImages && current.payload.image != null ||
+          automaticFiles &&
+              autoDownloadLimit > 0 &&
+              current.kind == 'files' &&
+              current.payload.totalBytes <= autoDownloadLimit &&
+              current.payload.totalBytes <= fileLimit);
+
   Future<void> setPaused(bool value) async {
     paused = value;
     _revision++;
+    _cancelImageReceive();
     _cancelPublication(null);
     if (!paused) await _baseline();
     if (item != null) _receipt(item!, paused ? 'paused' : 'needsAction');
@@ -688,7 +921,9 @@ class AppController extends ChangeNotifier {
       ClipboardSnapshot? snapshot;
       for (var attempt = 0; attempt < 4; attempt++) {
         try {
-          snapshot = await clipboard.read();
+          snapshot = automaticImages || automaticFiles
+              ? await clipboard.readContent(includeImages: automaticImages)
+              : await clipboard.read();
           break;
         } catch (_) {
           await Future<void>.delayed(
@@ -701,6 +936,7 @@ class AppController extends ChangeNotifier {
       _observedRevision = snapshot.revision;
       if (snapshot.ownWrite) return;
       _revision++;
+      _cancelImageReceive();
       _localDirty = true;
       _resumeGuard = false;
       if (item != null) {
@@ -714,9 +950,14 @@ class AppController extends ChangeNotifier {
         return;
       }
       if (!connected || _awaitingSnapshot) return;
+      if (snapshot.hasFiles && (!automaticFiles || snapshot.cut)) return;
       final text = snapshot.text;
-      if (text == null || text.isEmpty) return;
-      validText(text);
+      if (!snapshot.hasFiles &&
+          snapshot.png == null &&
+          (text == null || text.isEmpty)) {
+        return;
+      }
+      if (!snapshot.hasFiles && text?.isNotEmpty == true) validText(text);
       _candidate = snapshot;
       _coalesce?.cancel();
       _coalesce = Timer(
@@ -747,8 +988,8 @@ class AppController extends ChangeNotifier {
     final candidate = _candidate!;
     _candidate = null;
     try {
-      await sendText(
-        candidate.text!,
+      await _sendSnapshot(
+        candidate,
         automaticSend: true,
         nativeRevision: candidate.revision,
       );
@@ -759,8 +1000,13 @@ class AppController extends ChangeNotifier {
 
   Future<void> pasteAndSend() async {
     if (!sharing) throw SessionException('Connect and resume sharing first.');
-    final snapshot = await clipboard.read();
-    await sendText(validText(snapshot.text), nativeRevision: snapshot.revision);
+    final snapshot = clipboard.supportsImages
+        ? await clipboard.readContent()
+        : await clipboard.read();
+    if (snapshot.cut) {
+      throw SessionException('Use Copy instead of Cut to share files.');
+    }
+    await _sendSnapshot(snapshot, nativeRevision: snapshot.revision);
   }
 
   Future<void> sendText(
@@ -769,6 +1015,37 @@ class AppController extends ChangeNotifier {
     int? nativeRevision,
   }) async {
     validText(text);
+    await _sendSnapshot(
+      ClipboardSnapshot(text, nativeRevision ?? 0),
+      automaticSend: automaticSend,
+      nativeRevision: nativeRevision,
+    );
+  }
+
+  Future<void> _sendSnapshot(
+    ClipboardSnapshot snapshot, {
+    bool automaticSend = false,
+    int? nativeRevision,
+  }) async {
+    final generation = _connectionGeneration;
+    final files = snapshot.hasFiles
+        ? await FileContent.create(
+            snapshot.filePaths,
+            inspect: clipboard.inspectFile,
+            limit: fileLimit,
+          )
+        : null;
+    final content = snapshot.png == null
+        ? null
+        : await ImageContent.create(snapshot.png!, text: snapshot.text);
+    final payload =
+        files?.payload ??
+        content?.payload ??
+        ClipPayload.fromJson({'text': validText(snapshot.text)});
+    if (generation != _connectionGeneration ||
+        automaticSend && nativeRevision != _observedRevision) {
+      return;
+    }
     if (!sharing || _epoch == null || _awaitingSnapshot) {
       throw SessionException(
         'Wait for a connection and resume sharing before sending.',
@@ -783,10 +1060,12 @@ class AppController extends ChangeNotifier {
         'requestId': randomSecret(16),
         'epoch': _epoch,
         'baseSeq': _sequence,
-        'text': text,
+        ...payload.toJson(),
       },
       automaticSend,
       nativeRevision,
+      snapshot,
+      files,
     );
     _pending = publication;
     _notify();
@@ -802,7 +1081,7 @@ class AppController extends ChangeNotifier {
     final publication = _pending;
     if (publication == null) return;
     if (publication.age.elapsed > const Duration(seconds: 10)) {
-      conflictText ??= publication.message['text'] as String;
+      conflictPayload ??= publication.snapshot;
       _cancelPublication(
         'Delivery is unconfirmed. You can deliberately send again.',
       );
@@ -826,7 +1105,7 @@ class AppController extends ChangeNotifier {
       }
     } on SessionException catch (failure) {
       if ({'conflict', 'rate', 'request'}.contains(failure.code)) {
-        conflictText = publication.message['text'] as String;
+        conflictPayload = publication.snapshot;
         _cancelPublication(failure.message);
         if (host != null) _message(host!.engine.snapshot());
       }
@@ -844,16 +1123,514 @@ class AppController extends ChangeNotifier {
     if (reason != null) error = reason;
   }
 
-  void _receipt(ClipItem current, String status) {
+  void _receipt(ClipItem current, String status, {int? progress}) {
     final message = <String, dynamic>{
       'type': 'receipt',
       'itemId': current.id,
       'status': status,
+      'progress': ?progress,
     };
     if (host != null) {
       host!.receipt(identity.id, message);
     } else if (connected || _client != null) {
       unawaited(_client?.send(message).catchError((Object _) {}));
+    }
+  }
+
+  Future<Stream<List<int>>> _imageSource(
+    String id,
+    int entry,
+    int offset,
+  ) async {
+    final files = _outgoingFiles;
+    if (sharing && id == _outgoingId && files != null) {
+      return files.open(entry, offset, inspect: clipboard.inspectFile);
+    }
+    final bytes = _outgoingPng;
+    if (!sharing ||
+        id != _outgoingId ||
+        bytes == null ||
+        entry != 0 ||
+        offset > bytes.length) {
+      throw SessionException(
+        'The copied image is no longer available.',
+        'expired',
+      );
+    }
+    return Stream.value(Uint8List.sublistView(bytes, offset));
+  }
+
+  Future<void> _uploadImage(String id, Uint8List png) async {
+    final generation = _downloadGeneration;
+    try {
+      final local = host;
+      if (local != null) {
+        if (local.engine.item?.id != id) return;
+        local.transfers.blobs.put(id, 0, Uint8List.fromList(png));
+        local.refreshContent();
+      } else {
+        final current = item;
+        if (current?.id != id) return;
+        await _client!.transfers.upload(current!);
+      }
+    } catch (_) {
+      if (generation == _downloadGeneration && item?.id == id) {
+        error = 'The image could not be uploaded. Copy it again to retry.';
+        _notify();
+      }
+    }
+  }
+
+  void _cancelImageReceive() {
+    unawaited(clipboard.cancelImageWrite().catchError((Object _) {}));
+    _downloadGeneration++;
+    _download = null;
+    _fileDownload = null;
+    imageProgress = null;
+    if (_imageReady?.isCompleted == false) _imageReady!.complete();
+    _client?.transfers.cancel();
+    host?.transfers.forget(identity.id);
+  }
+
+  Future<void> setFileLimits({int? itemBytes, int? automaticBytes}) async {
+    fileLimit = (itemBytes ?? fileLimit).clamp(
+      16 * 1024 * 1024,
+      defaultItemBytes,
+    );
+    autoDownloadLimit = (automaticBytes ?? autoDownloadLimit).clamp(
+      0,
+      defaultItemBytes,
+    );
+    await preferences.setInt('fileLimit', fileLimit);
+    await preferences.setInt('autoDownloadLimit', autoDownloadLimit);
+    _revision++;
+    _cancelImageReceive();
+    _notify();
+  }
+
+  Future<void> sendAsZip() async {
+    if (!sharing || packagingFiles || _clearingFiles) return;
+    final paths = await clipboard.pickFiles(folder: true);
+    if (paths.isEmpty || !sharing) return;
+    final generation = _connectionGeneration;
+    final revision = _revision;
+    void check() {
+      if (!sharing ||
+          generation != _connectionGeneration ||
+          revision != _revision) {
+        throw SessionException('ZIP preparation cancelled.');
+      }
+    }
+
+    packagingFiles = true;
+    _notify();
+    try {
+      final cache = await clipboard.receiveCache();
+      final preparation = packageFiles(
+        paths,
+        cache,
+        inspect: clipboard.inspectFile,
+        check: check,
+        reserveSpace: (bytes) => _checkFileSpace(cache, bytes),
+        limit: fileLimit,
+      );
+      _zipPreparation = preparation;
+      final file = await preparation;
+      _outgoingZips[file.parent] = DateTime.now().add(fileLifetime);
+      await sendFiles([file.path]);
+    } finally {
+      _zipPreparation = null;
+      packagingFiles = false;
+      _notify();
+    }
+  }
+
+  Future<void> pickFiles({bool folder = false}) async {
+    if (!sharing) throw SessionException('Connect and resume sharing first.');
+    final paths = await clipboard.pickFiles(folder: folder);
+    if (paths.isNotEmpty) await sendFiles(paths);
+  }
+
+  Future<void> sendFiles(List<String> paths) => _sendSnapshot(
+    ClipboardSnapshot(null, 0, hasFiles: true, filePaths: paths),
+  );
+
+  Future<void> showReceivedFolder() async {
+    if (filesReady) {
+      await clipboard.showReceivedFolder(_receivedFiles!.directory.path);
+    }
+  }
+
+  Future<void> setAutomaticFiles(bool value) async {
+    automaticFiles = value && clipboard.supportsFiles;
+    await preferences.setBool('automaticFiles', automaticFiles);
+    _revision++;
+    _cancelImageReceive();
+    await _baseline();
+    _notify();
+  }
+
+  Future<void> _uploadFiles(String id, FileContent files) async {
+    if (!files.payload.cached) return;
+    try {
+      final local = host;
+      if (local != null) {
+        for (final entry in files.payload.streams.keys) {
+          final builder = BytesBuilder(copy: false);
+          await for (final bytes in files.open(
+            entry,
+            0,
+            inspect: clipboard.inspectFile,
+          )) {
+            if (_outgoingId != id || !sharing) return;
+            builder.add(bytes);
+          }
+          if (_outgoingId != id || local.engine.item?.id != id) return;
+          local.transfers.blobs.put(id, entry, builder.takeBytes());
+        }
+        local.refreshContent();
+      } else {
+        final current = item;
+        if (current?.id == id) await _client!.transfers.upload(current!);
+      }
+    } catch (_) {
+      if (_outgoingId == id) {
+        error = 'Files could not be uploaded. Copy them again to retry.';
+        _notify();
+      }
+    }
+  }
+
+  Future<ReceivedFiles> _ensureFiles(ClipItem current) {
+    if (filesReady && current.id == _receivedFilesId) {
+      return Future.value(_receivedFiles!);
+    }
+    if (_fileDownload != null) return _fileDownload!;
+    final generation = _downloadGeneration;
+    void check() {
+      if (generation != _downloadGeneration ||
+          _clearingFiles ||
+          item?.id != current.id ||
+          current.expired ||
+          !sharing) {
+        throw SessionException('File transfer cancelled.', 'expired');
+      }
+    }
+
+    final future = (() async {
+      try {
+        check();
+        if (!clipboard.supportsFiles) {
+          throw SessionException(
+            'File clipboard is unavailable on this device.',
+          );
+        }
+        if (current.payload.totalBytes > fileLimit) {
+          throw SessionException('Files exceed your item size limit.');
+        }
+        imageProgress = 0;
+        _receipt(current, 'downloading', progress: 0);
+        final receiptClock = Stopwatch()..start();
+        itemStatus = 'Downloading files';
+        _notify();
+        await (_imageReady?.future ?? Future<void>.value()).timeout(
+          const Duration(seconds: 30),
+        );
+        check();
+        final cache = await clipboard.receiveCache();
+        await _checkFileSpace(cache, current.payload.totalBytes);
+        check();
+        final result = await ReceivedFiles.receive(
+          cache,
+          current.payload.files!,
+          (entry, write) async {
+            check();
+            if (host != null) {
+              await host!.transfers.fetchLocal(
+                current,
+                entry,
+                (chunk) => write(chunk),
+              );
+            } else {
+              await _client!.transfers.fetch(
+                current,
+                entry,
+                (chunk) => write(chunk),
+              );
+            }
+          },
+          check: check,
+          markDownloaded: (path) async {
+            await File('$path:Zone.Identifier')
+                .writeAsString('[ZoneTransfer]\r\nZoneId=3\r\n', flush: true);
+          },
+          progress: (value) {
+            if (imageProgress != value) {
+              imageProgress = value;
+              itemStatus = 'Downloading files $value%';
+              if (value == 100 || receiptClock.elapsedMilliseconds >= 500) {
+                _receipt(current, 'downloading', progress: value);
+                receiptClock.reset();
+              }
+              _notify();
+            }
+          },
+        );
+        try {
+          check();
+        } catch (_) {
+          await result.delete();
+          rethrow;
+        }
+        _receivedFiles = result;
+        _receivedFilesId = current.id;
+        _fileCaches[result] = DateTime.now().add(
+          current.remaining + const Duration(hours: 1),
+        );
+        return result;
+      } catch (failure) {
+        if (generation == _downloadGeneration && item?.id == current.id) {
+          itemStatus = failure is SessionException
+              ? failure.message
+              : 'Download failed - retry Download';
+          _receipt(current, 'needsAction');
+          _notify();
+        }
+        rethrow;
+      } finally {
+        if (generation == _downloadGeneration) {
+          imageProgress = null;
+          _fileDownload = null;
+          _notify();
+        }
+      }
+    })();
+    _fileDownload = future;
+    return future;
+  }
+
+  void cancelFileDownload() {
+    _revision++;
+    _cancelImageReceive();
+    itemStatus = 'Download cancelled';
+    if (item != null) _receipt(item!, 'needsAction');
+    _notify();
+  }
+
+  Future<void> _sweepFileCaches() async {
+    if (_clearingFiles) return;
+    final snapshot = await clipboard.read();
+    for (final entry in _outgoingZips.entries.toList()) {
+      final paths = [
+        ...?_outgoingFiles?.paths.values,
+        ...?_pending?.files?.paths.values,
+      ];
+      if (DateTime.now().isAfter(entry.value) ||
+          !packagingFiles &&
+              !paths.any((p) => File(p).parent.path == entry.key.path)) {
+        if (await entry.key.exists()) await entry.key.delete(recursive: true);
+        _outgoingZips.remove(entry.key);
+      }
+    }
+    for (final entry in _fileCaches.entries.toList()) {
+      if (DateTime.now().isAfter(entry.value) ||
+          (entry.key != _receivedFiles || _receivedFilesId != item?.id) &&
+              _cacheRevisions[entry.key] != snapshot.revision) {
+        await entry.key.delete();
+        _fileCaches.remove(entry.key);
+        _cacheRevisions.remove(entry.key);
+        if (entry.key == _receivedFiles) {
+          _receivedFiles = null;
+          _receivedFilesId = null;
+        }
+      }
+    }
+  }
+
+  Future<void> _checkFileSpace(Directory cache, int bytes) async {
+    await _sweepFileCaches();
+    await checkFileCacheSpace(
+      cache,
+      incomingBytes: bytes,
+      cacheLimit: 2 * fileLimit,
+      availableBytes: await clipboard.availableFileSpace(cache.path),
+    );
+  }
+
+  Future<void> clearReceivedFiles() async {
+    if (!clipboard.supportsFiles || _clearingFiles) return;
+    _clearingFiles = true;
+    try {
+      _revision++;
+      final pendingDownload = _fileDownload;
+      _cancelImageReceive();
+      try {
+        await pendingDownload;
+      } catch (_) {}
+      try {
+        await _zipPreparation;
+      } catch (_) {}
+      final cache = await clipboard.receiveCache();
+      if (await cache.exists()) {
+        await for (final entry in cache.list(followLinks: false)) {
+          if (await FileSystemEntity.type(entry.path, followLinks: false) ==
+              FileSystemEntityType.directory) {
+            await Directory(entry.path).delete(recursive: true);
+          } else {
+            await entry.delete();
+          }
+        }
+      }
+      _fileCaches.clear();
+      _cacheRevisions.clear();
+      _outgoingZips.clear();
+      _receivedFiles = null;
+      _receivedFilesId = null;
+      _notify();
+    } finally {
+      _clearingFiles = false;
+    }
+  }
+
+  Future<Uint8List> _ensureImage(ClipItem current) {
+    final existing = receivedImage;
+    if (existing != null && current.id == item?.id) {
+      return Future.value(existing);
+    }
+    if (!clipboard.supportsImages || current.payload.image == null) {
+      return Future.error(
+        SessionException(
+          'This device cannot receive this content. Update Hopboard.',
+        ),
+      );
+    }
+    if (_download != null) return _download!;
+    final generation = _downloadGeneration;
+    final ready = _imageReady?.future ?? Future<void>.value();
+    final future = (() async {
+      void check() {
+        if (generation != _downloadGeneration ||
+            current.id != item?.id ||
+            current.expired ||
+            !sharing) {
+          throw SessionException('Image transfer cancelled.', 'expired');
+        }
+      }
+
+      try {
+        itemStatus = 'Receiving image…';
+        imageProgress = 0;
+        _notify();
+        await ready.timeout(const Duration(seconds: 30));
+        check();
+        final bytes = Uint8List(current.payload.image!.size);
+        var offset = 0;
+        Future<void> write(Uint8List chunk) async {
+          check();
+          bytes.setRange(offset, offset + chunk.length, chunk);
+          offset += chunk.length;
+          final progress = (offset * 100 / bytes.length).floor();
+          if (progress != imageProgress) {
+            imageProgress = progress;
+            _notify();
+          }
+        }
+
+        if (host != null) {
+          await host!.transfers.fetchLocal(current, 0, write);
+        } else {
+          await _client!.transfers.fetch(current, 0, write);
+        }
+        await ImageContent.verify(current.payload, bytes);
+        check();
+        _receivedId = current.id;
+        _receivedPng = bytes;
+        return bytes;
+      } finally {
+        if (generation == _downloadGeneration) {
+          imageProgress = null;
+          _download = null;
+          _notify();
+        }
+      }
+    })();
+    _download = future;
+    return future;
+  }
+
+  Future<bool> _writeItem(ClipItem current, int? expectedRevision) async {
+    if (current.payload.image != null) {
+      return clipboard.writeImage(
+        await _ensureImage(current),
+        text: current.payload.text,
+        expectedRevision: expectedRevision,
+      );
+    }
+    if (current.kind == 'files') {
+      final files = await _ensureFiles(current);
+      return clipboard.writeFiles(
+        files.roots,
+        expectedRevision: expectedRevision,
+      );
+    }
+    return clipboard.write(current.text, expectedRevision: expectedRevision);
+  }
+
+  Future<ClipboardSnapshot> _readApplied(ClipItem current) async {
+    final snapshot = current.kind == 'files'
+        ? await clipboard.readContent(includeImages: false)
+        : current.payload.image == null
+        ? await clipboard.read()
+        : await clipboard.readContent();
+    if (current.kind == 'files' &&
+        _matches(snapshot, current) &&
+        _receivedFiles != null) {
+      _cacheRevisions[_receivedFiles!] = snapshot.revision;
+    }
+    return snapshot;
+  }
+
+  bool _matches(ClipboardSnapshot snapshot, ClipItem current) =>
+      snapshot.ownWrite &&
+      (current.kind != 'files' ||
+          listEquals(snapshot.filePaths, _receivedFiles?.roots)) &&
+      (current.payload.text == null || snapshot.text == current.text) &&
+      (current.payload.image == null ||
+          listEquals(snapshot.png, receivedImage));
+
+  Future<bool> _fallbackMixed(
+    ClipItem current,
+    int guard,
+    int? expected,
+  ) async {
+    if (current.kind != 'mixed' ||
+        guard != _revision ||
+        !sharing ||
+        current.id != item?.id ||
+        current.expired) {
+      return false;
+    }
+    try {
+      final before = await clipboard.read();
+      if (guard != _revision ||
+          current.id != item?.id ||
+          before.revision != expected &&
+              !(before.ownWrite && before.text == current.text)) {
+        return false;
+      }
+      if (!(before.ownWrite && before.text == current.text) &&
+          !await clipboard.write(
+            current.text,
+            expectedRevision: before.revision,
+          )) {
+        return false;
+      }
+      final after = await clipboard.read();
+      if (!after.ownWrite || after.text != current.text) return false;
+      _observedRevision = after.revision;
+      return true;
+    } catch (_) {
+      return false;
     }
   }
 
@@ -863,7 +1640,7 @@ class AppController extends ChangeNotifier {
         .then((_) async {
           final expectedRevision = _observedRevision;
           if (!sharing ||
-              !automatic ||
+              !_autoAccepts(current) ||
               current.id != item?.id ||
               current.expired ||
               guard != _revision ||
@@ -872,21 +1649,47 @@ class AppController extends ChangeNotifier {
               expectedRevision == null) {
             return;
           }
+          if (current.kind == 'files') {
+            try {
+              await _ensureFiles(current);
+            } catch (_) {
+              return;
+            }
+          }
+          if (current.payload.image != null) {
+            try {
+              await _ensureImage(current);
+            } catch (_) {
+              if (guard == _revision &&
+                  sharing &&
+                  current.id == item?.id &&
+                  !current.expired) {
+                if (await _fallbackMixed(current, guard, expectedRevision)) {
+                  itemStatus = 'Text ready · image needs attention';
+                } else {
+                  itemStatus = 'Image needs attention · tap Copy image';
+                }
+                _receipt(current, 'needsAction');
+                _notify();
+              }
+              return;
+            }
+          }
           for (var attempt = 0; attempt < 4; attempt++) {
-            if (guard != _revision || !sharing || current.id != item?.id) {
+            if (guard != _revision ||
+                !sharing ||
+                !_autoAccepts(current) ||
+                current.id != item?.id) {
               return;
             }
             try {
-              final success = await clipboard.write(
-                current.text,
-                expectedRevision: expectedRevision,
-              );
+              final success = await _writeItem(current, expectedRevision);
               if (!success) {
                 _resumeGuard = true;
                 break;
               }
-              final snapshot = await clipboard.read();
-              if (!snapshot.ownWrite || snapshot.text != current.text) {
+              final snapshot = await _readApplied(current);
+              if (!_matches(snapshot, current)) {
                 unawaited(_clipboardChanged());
                 itemStatus = 'Local clipboard changed';
                 _receipt(current, 'needsAction');
@@ -903,7 +1706,11 @@ class AppController extends ChangeNotifier {
                 clipboard
                     .notify(
                       'Clipboard replaced',
-                      'Text from ${current.senderName} is ready to paste.',
+                      '${current.kind == 'files'
+                          ? 'Files'
+                          : current.payload.isText
+                          ? 'Text'
+                          : 'Image'} from ${current.senderName} is ready to paste.',
                     )
                     .catchError((Object _) {}),
               );
@@ -914,38 +1721,81 @@ class AppController extends ChangeNotifier {
               );
             }
           }
-          itemStatus = 'Clipboard needs attention · tap Copy';
+          itemStatus = await _fallbackMixed(current, guard, expectedRevision)
+              ? 'Text ready · image needs attention'
+              : 'Clipboard needs attention · tap Copy';
           _receipt(current, 'needsAction');
           _notify();
         })
         .catchError((Object _) {});
   }
 
-  Future<void> copyReceived() async {
+  Future<void> copyReceived() {
     final current = item;
     if (current == null || current.expired) {
-      throw SessionException('There is no current shared text.');
+      return Future.error(SessionException('There is no current shared item.'));
+    }
+    _revision++;
+    unawaited(clipboard.cancelImageWrite().catchError((Object _) {}));
+    final result = _application.then((_) => _copyReceived(current));
+    _application = result.catchError((Object _) {});
+    return result;
+  }
+
+  Future<void> _copyReceived(ClipItem current) async {
+    if (current.id != item?.id || current.expired) {
+      throw SessionException('The shared item changed. Try Copy again.');
     }
     if (paused || !foreground) {
       throw SessionException('Resume sharing before copying.');
     }
     _revision++;
     _cancelPublication(null);
+    final guard = _revision;
+    final expected = canAutomatic ? (await clipboard.read()).revision : null;
+    if (current.kind == 'files') await _ensureFiles(current);
+    if (current.payload.image != null) {
+      try {
+        await _ensureImage(current);
+      } catch (_) {
+        if (await _fallbackMixed(current, guard, expected)) {
+          itemStatus = 'Text ready · image needs attention';
+          _receipt(current, 'needsAction');
+          _notify();
+        }
+        rethrow;
+      }
+    }
     var success = false;
     for (var attempt = 0; attempt < 4; attempt++) {
-      if (current.id != item?.id || current.expired) break;
+      if (guard != _revision ||
+          current.id != item?.id ||
+          current.expired ||
+          !sharing) {
+        break;
+      }
       try {
-        success = await clipboard.write(current.text);
+        success = await _writeItem(current, expected);
         if (success) break;
       } catch (_) {
         await Future<void>.delayed(const Duration(milliseconds: 50));
       }
     }
     if (!success) {
+      if (await _fallbackMixed(current, guard, expected)) {
+        itemStatus = 'Text ready · image needs attention';
+        _receipt(current, 'needsAction');
+        _notify();
+      }
       throw SessionException('Could not update the clipboard. Try Copy again.');
     }
     if (canAutomatic) {
-      final snapshot = await clipboard.read();
+      final snapshot = await _readApplied(current);
+      if (!_matches(snapshot, current)) {
+        throw SessionException(
+          'Your newer local copy was preserved. Try Copy again.',
+        );
+      }
       _observedRevision = snapshot.revision;
     }
     _localDirty = false;
@@ -959,6 +1809,7 @@ class AppController extends ChangeNotifier {
   Future<void> copyInvitation(String text) async {
     // Pairing material stays local and must survive incoming auto-sync writes.
     _revision++;
+    _cancelImageReceive();
     _cancelPublication(null);
     _resumeGuard = true;
     _localDirty = true;
@@ -976,12 +1827,12 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> sendMine() async {
-    final text = conflictText;
-    if (text == null) return;
+    final content = conflictPayload;
+    if (content == null) return;
     _cancelPublication(null);
     conflictText = null;
     _resumeGuard = false;
-    await sendText(text);
+    await _sendSnapshot(content);
   }
 
   Future<void> setKeepAwake(bool value) async {
@@ -1100,6 +1951,12 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> leave() async {
+    _cancelImageReceive();
+    _receivedPng = null;
+    _receivedId = null;
+    _outgoingPng = null;
+    _outgoingFiles = null;
+    _outgoingId = null;
     _connectionGeneration++;
     _connecting = false;
     _reconnect?.cancel();
@@ -1148,11 +2005,14 @@ class AppController extends ChangeNotifier {
     try {
       await discovery.stop();
     } catch (_) {}
+    await clearReceivedFiles();
     await clipboard.quit();
   }
 
   @override
   void dispose() {
+    _cancelImageReceive();
+    _cacheSweep?.cancel();
     _disposed = true;
     _reconnect?.cancel();
     _coalesce?.cancel();
@@ -1160,6 +2020,7 @@ class AppController extends ChangeNotifier {
     _expire?.cancel();
     _networkTimer?.cancel();
     unawaited(_clipboardSub?.cancel());
+    unawaited(_fileDropSub?.cancel());
     unawaited(_actionSub?.cancel());
     unawaited(_sessionSub?.cancel());
     unawaited(_pairSub?.cancel());

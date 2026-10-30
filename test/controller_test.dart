@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:local_clipboard/app/controller.dart';
@@ -42,8 +44,274 @@ void main() {
     await approval?.cancel();
     await b.leave();
     await a.leave();
+    for (final controller in [a, b]) {
+      final cache = (controller.clipboard as FakeClipboard).fileCache;
+      if (cache != null && await cache.exists()) {
+        await cache.delete(recursive: true);
+      }
+    }
     a.dispose();
     b.dispose();
+  });
+
+  test(
+    'files require consent, preserve nested bytes, and sync both directions',
+    () async {
+      final ca = a.clipboard as FakeClipboard,
+          cb = b.clipboard as FakeClipboard;
+      ca.filesEnabled = cb.filesEnabled = true;
+      final source = await Directory.systemTemp.createTemp('hopboard-source-');
+      addTearDown(() => source.delete(recursive: true));
+      final folder = await Directory('${source.path}/Folder').create();
+      await Directory('${folder.path}/empty').create();
+      await File('${folder.path}/report.zip').writeAsBytes([1, 2, 3, 4]);
+      ca.userCopyFiles([folder.path]);
+      await Future<void>.delayed(const Duration(milliseconds: 180));
+      expect(a.item, null);
+      await a.setAutomaticFiles(true);
+      await b.setAutomaticFiles(true);
+      ca.userCopyFiles([folder.path]);
+      await eventually(() => b.itemStatus == 'Ready to paste');
+      expect(b.item!.kind, 'files');
+      expect(await File('${cb.filePaths.single}/report.zip').readAsBytes(), [
+        1,
+        2,
+        3,
+        4,
+      ]);
+      expect(await Directory('${cb.filePaths.single}/empty').exists(), true);
+      expect(a.host!.engine.sequence, 1);
+      expect(cb.writes, 1);
+      // Use a different root so the second publication is a genuine local copy.
+      final other = await File('${source.path}/other.txt')
+          .writeAsString('return');
+      cb.userCopyFiles([other.path]);
+      await eventually(() => a.itemStatus == 'Ready to paste');
+      expect(await File(ca.filePaths.single).readAsString(), 'return');
+      expect(a.host!.engine.sequence, 2);
+      expect(ca.writes, 1);
+    },
+  );
+
+  test(
+    'member download progress is bounded and cleared for the next item',
+    () async {
+      await a.sendText('progress test');
+      await eventually(() => b.item != null);
+      final host = a.host!;
+      host.receipt(b.identity.id, {
+        'itemId': b.item!.id,
+        'status': 'downloading',
+        'progress': 37,
+      });
+      await eventually(
+        () => b.members.any(
+          (m) => m['id'] == b.identity.id && m['progress'] == 37,
+        ),
+      );
+      host.receipt(b.identity.id, {
+        'itemId': b.item!.id,
+        'status': 'downloading',
+        'progress': 101,
+      });
+      await eventually(
+        () => b.members.any(
+          (m) => m['id'] == b.identity.id && !m.containsKey('progress'),
+        ),
+      );
+      host.receipt(b.identity.id, {
+        'itemId': b.item!.id,
+        'status': 'downloading',
+        'progress': 40,
+      });
+      host.engine.clear();
+      await eventually(() => b.item == null);
+      expect(b.members.every((m) => !m.containsKey('progress')), true);
+    },
+  );
+
+  test('file consent never enables automatic image sending', () async {
+    final ca = a.clipboard as FakeClipboard;
+    ca.filesEnabled = true;
+    await a.setAutomaticFiles(true);
+    ca.userCopyImage(
+      base64Decode(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+      ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 180));
+    expect(a.item, null);
+  });
+
+  test('Cut and sensitive files are not automatically published', () async {
+    final ca = a.clipboard as FakeClipboard;
+    ca.filesEnabled = true;
+    await a.setAutomaticFiles(true);
+    ca.userCopyFiles(['unused'], move: true);
+    await Future<void>.delayed(const Duration(milliseconds: 180));
+    expect(a.item, null);
+    await expectLater(a.pasteAndSend(), throwsA(isA<SessionException>()));
+    ca.userCopyFiles(['unused'], private: true);
+    await Future<void>.delayed(const Duration(milliseconds: 180));
+    expect(a.item, null);
+  });
+
+  test(
+    'large files wait for Download and respect the receiver size limit',
+    () async {
+      final ca = a.clipboard as FakeClipboard,
+          cb = b.clipboard as FakeClipboard;
+      ca.filesEnabled = cb.filesEnabled = true;
+      final source = await Directory.systemTemp.createTemp('hopboard-large-');
+      addTearDown(() => source.delete(recursive: true));
+      final file = File('${source.path}/large.bin');
+      final handle = await file.open(mode: FileMode.write);
+      await handle.truncate(257 * 1024 * 1024);
+      await handle.close();
+      await b.setAutomaticFiles(true);
+      await a.sendFiles([file.path]);
+      await eventually(() => b.item?.kind == 'files');
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(b.imageProgress, null);
+      expect(cb.writes, 0);
+      expect(cb.fileCache, null);
+      await b.setFileLimits(itemBytes: 16 * 1024 * 1024);
+      await expectLater(b.copyReceived(), throwsA(isA<SessionException>()));
+      expect(cb.writes, 0);
+      expect(cb.fileCache, null);
+    },
+  );
+
+  test(
+    'low disk space prevents download and allows retry after space is freed',
+    () async {
+      final ca = a.clipboard as FakeClipboard,
+          cb = b.clipboard as FakeClipboard;
+      ca.filesEnabled = cb.filesEnabled = true;
+      final source = await Directory.systemTemp.createTemp('hopboard-space-');
+      addTearDown(() => source.delete(recursive: true));
+      final file = await File('${source.path}/report.txt')
+          .writeAsString('content');
+      cb.availableBytes = 1024 * 1024 * 1024;
+      await b.setAutomaticFiles(true);
+      await a.sendFiles([file.path]);
+      await eventually(() => b.itemStatus.contains('disk space'));
+      expect(cb.writes, 0);
+      expect(await cb.fileCache!.list().toList(), isEmpty);
+      cb.availableBytes *= 2;
+      await b.copyReceived();
+      expect(b.itemStatus, 'Ready to paste');
+      expect(await File(cb.filePaths.single).readAsString(), 'content');
+    },
+  );
+
+  test(
+    'clearing the cache waits for cancelled downloads and permits retry',
+    () async {
+      final ca = a.clipboard as FakeClipboard,
+          cb = b.clipboard as FakeClipboard;
+      ca.filesEnabled = cb.filesEnabled = true;
+      final source = await Directory.systemTemp.createTemp('hopboard-clear-');
+      addTearDown(() => source.delete(recursive: true));
+      final file = await File('${source.path}/file.txt')
+          .writeAsString('content');
+      cb.receiveGate = Completer<void>();
+      await b.setAutomaticFiles(true);
+      await a.sendFiles([file.path]);
+      await eventually(() => b.imageProgress != null);
+      final clearing = b.clearReceivedFiles();
+      cb.receiveGate!.complete();
+      await clearing;
+      expect(cb.writes, 0);
+      expect(await cb.fileCache!.list().toList(), isEmpty);
+      await b.copyReceived();
+      expect(await File(cb.filePaths.single).readAsString(), 'content');
+    },
+  );
+
+  test('a new local copy cancels a pending file download', () async {
+    final ca = a.clipboard as FakeClipboard, cb = b.clipboard as FakeClipboard;
+    ca.filesEnabled = cb.filesEnabled = true;
+    final source = await Directory.systemTemp.createTemp('hopboard-cancel-');
+    addTearDown(() => source.delete(recursive: true));
+    final file = await File('${source.path}/file.txt')
+        .writeAsString('received');
+    cb.receiveGate = Completer<void>();
+    await b.setAutomaticFiles(true);
+    await a.sendFiles([file.path]);
+    await eventually(() => b.imageProgress != null);
+    cb.userCopy('newer local copy', private: true);
+    await eventually(() => b.imageProgress == null);
+    cb.receiveGate!.complete();
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+    expect(cb.text, 'newer local copy');
+    expect(cb.writes, 0);
+    if (cb.fileCache != null) {
+      expect(await cb.fileCache!.list().toList(), isEmpty);
+    }
+  });
+
+  final png = base64Decode(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+  );
+
+  test(
+    'images require separate consent and sync both directions without echo',
+    () async {
+      final ca = a.clipboard as FakeClipboard,
+          cb = b.clipboard as FakeClipboard;
+      ca.userCopyImage(png);
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      expect(a.host!.engine.item, null);
+      await a.setAutomaticImages(true);
+      await b.setAutomaticImages(true);
+      ca.userCopyImage(png);
+      await eventually(
+        () => cb.png != null && b.itemStatus == 'Ready to paste',
+      );
+      expect(cb.png, png);
+      expect(b.item!.kind, 'image');
+      expect(cb.writes, 1);
+      expect(a.host!.engine.sequence, 1);
+      cb.userCopyImage(png, text: 'A\tB\n1\t2');
+      await eventually(
+        () => a.item?.kind == 'mixed' && a.itemStatus == 'Ready to paste',
+      );
+      expect(ca.png, png);
+      expect(ca.text, 'A\tB\n1\t2');
+      expect(ca.writes, 1);
+      expect(a.host!.engine.sequence, 2);
+      expect(ca.notices.last, 'Image from Desktop B is ready to paste.');
+    },
+  );
+
+  test('manual image sharing works without automatic image consent', () async {
+    await b.setAutomatic(false);
+    final ca = a.clipboard as FakeClipboard, cb = b.clipboard as FakeClipboard;
+    ca.userCopyImage(png, text: 'manual');
+    await a.pasteAndSend();
+    await eventually(() => b.item?.kind == 'mixed');
+    expect(cb.png, null);
+    await b.copyReceived();
+    expect(cb.png, png);
+    expect(cb.text, 'manual');
+    expect(b.itemStatus, 'Ready to paste');
+  });
+
+  test('sensitive images and newer local copies are preserved', () async {
+    await a.setAutomaticImages(true);
+    await b.setAutomaticImages(true);
+    final ca = a.clipboard as FakeClipboard, cb = b.clipboard as FakeClipboard;
+    ca.userCopyImage(png, private: true);
+    await Future<void>.delayed(const Duration(milliseconds: 180));
+    expect(a.host!.engine.item, null);
+    cb.beforeWrite = () => cb.userCopy('newer local copy', private: true);
+    ca.userCopyImage(png);
+    await eventually(() => b.item?.kind == 'image');
+    await eventually(() => cb.text == 'newer local copy');
+    expect(cb.png, null);
+    expect(b.itemStatus, isNot('Ready to paste'));
+    expect(cb.writes, 0);
   });
 
   test(
@@ -145,16 +413,19 @@ void main() {
     },
   );
 
-  test('copies marked private by their app are never sent automatically', () async {
-    final ca = a.clipboard as FakeClipboard;
-    final cb = b.clipboard as FakeClipboard;
-    cb.userCopy('password from a vault', private: true);
-    await Future<void>.delayed(const Duration(milliseconds: 500));
-    expect(a.host!.engine.item, null);
-    expect(ca.text, null);
-    cb.userCopy('ordinary text');
-    await eventually(() => ca.text == 'ordinary text');
-  });
+  test(
+    'copies marked private by their app are never sent automatically',
+    () async {
+      final ca = a.clipboard as FakeClipboard;
+      final cb = b.clipboard as FakeClipboard;
+      cb.userCopy('password from a vault', private: true);
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      expect(a.host!.engine.item, null);
+      expect(ca.text, null);
+      cb.userCopy('ordinary text');
+      await eventually(() => ca.text == 'ordinary text');
+    },
+  );
 
   test(
     'spoofed discovery for a saved host neither redirects nor unpairs it',
