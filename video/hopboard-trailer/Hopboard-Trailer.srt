@@ -1,0 +1,47 @@
+1
+00:00:00,267 --> 00:00:04,797
+Meet Hopboard. A shared clipboard for your nearby devices.
+
+2
+00:00:05,267 --> 00:00:09,800
+Copy here. Paste there. Same Wi-Fi. No account, cloud, or internet required.
+
+3
+00:00:10,267 --> 00:00:14,798
+Start a session on your PC. Pair with a six-digit code.
+
+4
+00:00:15,267 --> 00:00:19,798
+Approve the device. Enable automatic sharing when you're ready.
+
+5
+00:00:20,267 --> 00:00:23,075
+Copy a link or note on your laptop.
+
+6
+00:00:25,267 --> 00:00:29,798
+It crosses your local network. Paste it on your other PC.
+
+7
+00:00:30,267 --> 00:00:34,801
+On Android, keep Hopboard open. Use Paste and Send, or Copy.
+
+8
+00:00:35,267 --> 00:00:39,323
+Beyond text: Windows development builds also share images.
+
+9
+00:00:40,267 --> 00:00:44,805
+Send files, folders, or ZIPs. Verified before they are ready to paste.
+
+10
+00:00:45,267 --> 00:00:49,800
+You choose what shares. Images and files each need separate permission.
+
+11
+00:00:50,267 --> 00:00:54,809
+Pause from the tray. Reconnect trusted devices. Follow your system theme.
+
+12
+00:00:55,267 --> 00:00:59,801
+Hopboard. Your devices. One local clipboard.

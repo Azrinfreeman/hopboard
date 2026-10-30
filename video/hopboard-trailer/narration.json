@@ -1,0 +1,74 @@
+[
+  {
+    "scene": 0,
+    "text": "Meet Hopboard. A shared clipboard for your nearby devices.",
+    "duration": 4.53075,
+    "fromFrame": 8
+  },
+  {
+    "scene": 1,
+    "text": "Copy here. Paste there. Same Wi-Fi. No account, cloud, or internet required.",
+    "duration": 4.533833,
+    "fromFrame": 158
+  },
+  {
+    "scene": 2,
+    "text": "Start session. Add device. Select the host. Enter its six-digit code.",
+    "duration": 4.533,
+    "fromFrame": 308
+  },
+  {
+    "scene": 3,
+    "text": "Approve the device. Enable automatic sharing when you're ready.",
+    "duration": 4.531042,
+    "fromFrame": 458
+  },
+  {
+    "scene": 4,
+    "text": "Copy a link or note on your laptop.",
+    "duration": 2.808,
+    "fromFrame": 608
+  },
+  {
+    "scene": 5,
+    "text": "It crosses your local network. Paste it on your other PC.",
+    "duration": 4.531042,
+    "fromFrame": 758
+  },
+  {
+    "scene": 6,
+    "text": "On Android, keep Hopboard open. Use Paste and Send, or Copy.",
+    "duration": 4.534792,
+    "fromFrame": 908
+  },
+  {
+    "scene": 7,
+    "text": "Beyond text: Windows development builds also share images.",
+    "duration": 4.056,
+    "fromFrame": 1058
+  },
+  {
+    "scene": 8,
+    "text": "Send files, folders, or ZIPs. Verified before they are ready to paste.",
+    "duration": 4.537958,
+    "fromFrame": 1208
+  },
+  {
+    "scene": 9,
+    "text": "You choose what shares. Images and files each need separate permission.",
+    "duration": 4.533667,
+    "fromFrame": 1358
+  },
+  {
+    "scene": 10,
+    "text": "Pause from the tray. Reconnect trusted devices. Follow your system theme.",
+    "duration": 4.542,
+    "fromFrame": 1508
+  },
+  {
+    "scene": 11,
+    "text": "Hopboard. Your devices. One local clipboard.",
+    "duration": 4.533917,
+    "fromFrame": 1658
+  }
+]
