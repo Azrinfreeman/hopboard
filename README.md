@@ -159,4 +159,4 @@ The unsigned command checks compilation; a signed archive/device run requires pr
 
 `test/` exercises real pinned TLS loopback sessions and controllable clipboard adapters: message limits, pairing, revocation, ordering, deduplication, rapid copies, pause/resume, reconnection, and clipboard races. `integration_test/windows_smoke_test.dart` exercises native encrypted storage, listener/tray initialization, and UI startup without reading or replacing the user's clipboard.
 
-See [VALIDATION.md](VALIDATION.md) for verified results and remaining gates.
+See [STATUS.md](STATUS.md) for current progress and next steps, and [VALIDATION.md](VALIDATION.md) for verified results and remaining gates.
