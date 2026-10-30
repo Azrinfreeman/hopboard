@@ -1,6 +1,6 @@
 ﻿# Validation record
 
-Development version 0.1.1, checked on 12 October 2026. This records observed results separately from the physical-device checks that remain open.
+Records observed results; sections are dated. The first section was checked on 12 October 2026 against version 0.1.1. This records observed results separately from the physical-device checks that remain open.
 
 ## Verified
 
