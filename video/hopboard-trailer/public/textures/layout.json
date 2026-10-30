@@ -1,0 +1,47 @@
+{
+  "pageW": 1440,
+  "pageH": 900,
+  "pixelRatio": 2,
+  "elements": {
+    "pair-card": {
+      "source": "pairing",
+      "x": 505,
+      "y": 45,
+      "w": 430,
+      "h": 810,
+      "pixelRatio": 2
+    },
+    "auto-control": {
+      "source": "clipboard",
+      "x": 120,
+      "y": 240,
+      "w": 1200,
+      "h": 100,
+      "pixelRatio": 2
+    },
+    "text-card": {
+      "source": "clipboard",
+      "x": 120,
+      "y": 452,
+      "w": 832,
+      "h": 330,
+      "pixelRatio": 2
+    },
+    "device-list": {
+      "source": "devices",
+      "x": 120,
+      "y": 205,
+      "w": 1200,
+      "h": 540,
+      "pixelRatio": 2
+    },
+    "file-card": {
+      "source": "files",
+      "x": 120,
+      "y": 452,
+      "w": 832,
+      "h": 330,
+      "pixelRatio": 2
+    }
+  }
+}
