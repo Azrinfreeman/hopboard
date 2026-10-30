@@ -5,13 +5,47 @@ import 'framing.dart';
 import 'identity.dart';
 import 'pair_code.dart';
 import 'protocol.dart';
+import 'content.dart';
+import 'transfer.dart';
 
 class SessionClient {
   /// [address] and [port] override the saved route, e.g. an unverified
   /// discovery result; the saved certificate pin is always enforced.
-  SessionClient(this.identity, this.host, {String? address, int? port})
-    : address = address ?? host.address,
-      port = port ?? host.port;
+  SessionClient(
+    this.identity,
+    this.host, {
+    String? address,
+    int? port,
+    this.content = false,
+  }) : address = address ?? host.address,
+       port = port ?? host.port;
+  final bool content;
+  bool hostSupportsContent = false;
+  late final transfers = TransferClient(
+    connect: () => connectPinned(address, port, host.fingerprint),
+    request: _transferRequest,
+    deviceId: identity.id,
+    credential: host.credential,
+    onCancel: (token) => _connection?.post({'type': 'cancel', 'ticket': token}),
+  );
+  final _requests = <String, Completer<Map<String, dynamic>>>{};
+  Future<Map<String, dynamic>> _transferRequest(
+    Map<String, dynamic> message,
+  ) async {
+    if (!content || !hostSupportsContent) {
+      throw SessionException('Host needs an update.', 'update');
+    }
+    final id = message['requestId'] as String;
+    final result = Completer<Map<String, dynamic>>();
+    _requests[id] = result;
+    try {
+      await send(message);
+      return await result.future.timeout(const Duration(seconds: 10));
+    } finally {
+      _requests.remove(id);
+    }
+  }
+
   final Identity identity;
   final SavedHost host;
   final String address;
@@ -210,11 +244,38 @@ class SessionClient {
     connection.messages.listen(
       (message) {
         _lastSeen.reset();
+        if (message['type'] == 'serve' && content) {
+          unawaited(transfers.serve(message).catchError((Object _) {}));
+          return;
+        }
+        final pending = _requests[message['requestId']];
+        if (pending != null &&
+            !pending.isCompleted &&
+            {
+              'fetchTicket',
+              'uploadTicket',
+              'error',
+            }.contains(message['type'])) {
+          if (message['type'] == 'error') {
+            pending.completeError(
+              SessionException(
+                field(message, 'message', max: 512),
+                field(message, 'code'),
+              ),
+            );
+          } else {
+            pending.complete(message);
+          }
+          return;
+        }
         if (message['type'] == 'ping') {
           connection.post({'type': 'pong'});
           return;
         }
         if (message['type'] == 'hello') {
+          hostSupportsContent =
+              message['features'] is List &&
+              (message['features'] as List).contains(contentFeature);
           if (message['hostId'] != host.id) {
             connection.close();
             return;
@@ -232,6 +293,7 @@ class SessionClient {
         if (!_stopped) events.add(message);
       },
       onDone: () {
+        transfers.cancel();
         _heartbeat?.cancel();
         if (!hello.isCompleted) {
           hello.completeError(SessionException('Host closed the connection.'));
@@ -243,6 +305,8 @@ class SessionClient {
       'type': 'auth',
       'deviceId': identity.id,
       'credential': host.credential,
+      if (content) 'features': [contentFeature],
+      'appVersion': applicationVersion,
     });
     await hello.future.timeout(const Duration(seconds: 5));
     _heartbeat = Timer.periodic(const Duration(seconds: 30), (_) {
@@ -267,6 +331,7 @@ class SessionClient {
   void stop() {
     if (_stopped) return;
     _stopped = true;
+    transfers.stop();
     _heartbeat?.cancel();
     _connection?.close();
     unawaited(events.close());

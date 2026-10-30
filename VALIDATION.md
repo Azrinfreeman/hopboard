@@ -1,4 +1,4 @@
-# Validation record
+﻿# Validation record
 
 Development version 0.1.1, checked on 12 October 2026. This records observed results separately from the physical-device release criteria in IMPLEMENTATION.md.
 
@@ -67,3 +67,28 @@ flutter test integration_test/windows_smoke_test.dart -d windows --dart-define=A
 ```
 
 The implementation explicitly distinguishes host acknowledgement, inbox availability, and confirmed OS clipboard application. “Flawless and seamless” remains the release contract; this development build cannot yet claim that the physical-device reliability gates have passed.
+
+## Windows rich clipboard development checks (30 October 2026)
+
+The 0.2.0 development implementation builds for Windows and includes image/mixed controller tests plus offline updater validation. Device checks still required:
+
+- Enable image consent independently, then copy a screenshot between two PCs and paste in Paint, Word and a chat app.
+- Copy Excel cells and paste as cells in Excel and as an image in Paint. Confirm fallback text does not overwrite a newer local copy when image transfer fails.
+- Exercise Pause, Clear, expiry, reconnection, clipboard contention and private clipboard formats during image transfers.
+- Run the Update flow against an actual published installer: verify cancellation, corrupted download rejection, app exit, helper launch and successful restart. No real installer was downloaded or executed during automated verification.
+- Windows Explorer files/folders are implemented in development source; physical Explorer interoperability and phone image/file workflows remain unverified. Phone rich-content support is pending implementation.
+
+### Phase 3 Windows files/folders (30 October 2026)
+
+- The resumed full suite passed **82 tests**, including the **1 GiB TLS relay** with slow-receiver, ping, suffix-offset and memory-bound checks. After cache-space and progress additions, the suite excluding `large` passed **84 tests**. Final cache/ZIP cleanup changes passed **27 controller/file tests**, and the preceding controller/file/widget run passed **42 tests**. The unchanged large-transfer test was not repeated after these controller/cache refinements.
+- Final `flutter analyze --no-pub`: **no issues**. Final `flutter build windows --debug --no-pub`: **passed**.
+- `flutter test integration_test/windows_files_test.dart -d windows --no-pub`: **1 native test passed**. It verifies real `CF_HDROP` read/write, Copy rather than Cut semantics, own-write detection, stale-revision rejection and the available-disk-space bridge. It temporarily replaces the clipboard and restores the supported text/image/file content afterward; it does not establish two-PC Explorer paste interoperability.
+- Controller/file checks cover bidirectional nested file bytes and empty folders, separate consent, Cut/private-copy rejection, manual size thresholds, source changes, staged cleanup, local-copy cancellation, clear-and-retry, low-disk rejection and retry, retained-cache accounting, ZIP contents and failed ZIP reservation. Member progress is range-checked and cleared on supersession.
+- File controls/progress pass desktop and 320-pixel, 2× text-scale widget layouts. Refreshed and visually inspected `artifacts/phase3/windows-files.png`.
+- Required next: two-PC Explorer/Office paste, actual Wi-Fi transfer and disconnection, disk exhaustion during writing, clipboard contention and retention/endurance checks. Phone rich-content implementation and real installer upgrade validation remain pending. No release or installer was published.
+
+### Local test packages (30 October 2026)
+
+- Built the Windows x64 release, version `0.2.0-dev+4`, and compiled `dist/Hopboard-Setup-0.2.0-dev-x64.exe` with Inno Setup. Installer tooling now accepts prerelease version labels.
+- Verified required installer-stage files, all three x64 Visual C++ runtime DLLs and executable equality with the release build. Verified required contents of the portable ZIP and both generated SHA-256 checksums.
+- Packages are unsigned local test builds. The installer was not installed or published; upgrade installation and two-PC paste remain for manual testing.

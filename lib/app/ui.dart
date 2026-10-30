@@ -12,6 +12,50 @@ import '../core/identity.dart';
 import '../core/protocol.dart';
 import 'controller.dart';
 
+class _SharedImagePreview extends StatefulWidget {
+  const _SharedImagePreview({required this.bytes, required this.sender});
+  final Uint8List bytes;
+  final String sender;
+  @override
+  State<_SharedImagePreview> createState() => _SharedImagePreviewState();
+}
+
+class _SharedImagePreviewState extends State<_SharedImagePreview> {
+  late ImageProvider image;
+  ImageProvider _provider() =>
+      ResizeImage.resizeIfNeeded(1024, null, MemoryImage(widget.bytes));
+  @override
+  void initState() {
+    super.initState();
+    image = _provider();
+  }
+
+  @override
+  void didUpdateWidget(covariant _SharedImagePreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.bytes != widget.bytes) {
+      unawaited(image.evict());
+      image = _provider();
+    }
+  }
+
+  @override
+  void dispose() {
+    unawaited(image.evict());
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Image(
+    image: image,
+    height: 192,
+    fit: BoxFit.contain,
+    semanticLabel: 'Shared image from ${widget.sender}',
+    errorBuilder: (_, _, _) =>
+        const Text('Image preview unavailable · Copy image to use it'),
+  );
+}
+
 // Compatibility names for existing importers. New widgets use semantic roles.
 const purple = Color(0xFF0066CC);
 const ink = Color(0xFF1D1D1F);
@@ -1116,6 +1160,44 @@ class _ClipboardHomeState extends State<ClipboardHome>
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
       _heading('Clipboard'),
+      if (app.updateAvailable || app.hostUpdateNotice != null) ...[
+        _card(
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                app.updateAvailable
+                    ? 'Hopboard ${app.newerVersion} is available'
+                    : app.hostUpdateNotice!,
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+              if (app.updateBusy) ...[
+                const SizedBox(height: 12),
+                LinearProgressIndicator(
+                  value: app.updateProgress,
+                  semanticsLabel: 'Downloading update',
+                ),
+              ],
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                children: [
+                  if (app.updateAvailable && app.canInstallUpdate)
+                    FilledButton(
+                      onPressed: app.updateBusy ? null : _update,
+                      child: const Text('Update'),
+                    ),
+                  TextButton(
+                    onPressed: app.updateBusy ? null : app.dismissUpdate,
+                    child: const Text('Not now'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 20),
+      ],
       if (!app.hosting && app.selectedHost == null)
         Wrap(
           spacing: 16,
@@ -1153,6 +1235,120 @@ class _ClipboardHomeState extends State<ClipboardHome>
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
         ),
       const SizedBox(height: 20),
+      if (app.clipboard.supportsImages) ...[
+        _card(
+          SwitchListTile.adaptive(
+            contentPadding: EdgeInsets.zero,
+            title: const Text(
+              'Share images automatically',
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+            ),
+            value: app.automaticImages,
+            onChanged: app.automatic ? _automaticImages : null,
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
+        ),
+        const SizedBox(height: 20),
+      ],
+      if (app.clipboard.supportsFiles) ...[
+        _card(
+          SwitchListTile.adaptive(
+            contentPadding: EdgeInsets.zero,
+            title: const Text(
+              'Share files automatically',
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+            ),
+            secondary: IconButton(
+              tooltip: 'Clear received files',
+              onPressed: () => _run(app.clearReceivedFiles),
+              icon: const Icon(Icons.delete_outline_rounded),
+            ),
+            value: app.automaticFiles,
+            onChanged: app.automatic ? _automaticFiles : null,
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
+        ),
+        const SizedBox(height: 20),
+      ],
+      if (app.clipboard.supportsFiles) ...[
+        Wrap(
+          spacing: 20,
+          runSpacing: 8,
+          children: [
+            SizedBox(
+              width: 250,
+              child: DropdownButton<int>(
+                isExpanded: true,
+                value:
+                    [0, 16, 64, 256, 1024]
+                        .map((e) => e * 1024 * 1024)
+                        .contains(app.autoDownloadLimit)
+                    ? app.autoDownloadLimit
+                    : null,
+                hint: const Text('Auto-download'),
+                items:
+                    {
+                          0: 'Download manually',
+                          16: 'Auto-download to 16 MiB',
+                          64: 'Auto-download to 64 MiB',
+                          256: 'Auto-download to 256 MiB',
+                          1024: 'Auto-download to 1 GiB',
+                        }.entries
+                        .map(
+                          (e) => DropdownMenuItem(
+                            value: e.key * 1024 * 1024,
+                            child: Text(
+                              e.value,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        )
+                        .toList(),
+                onChanged: (value) =>
+                    _run(() => app.setFileLimits(automaticBytes: value)),
+              ),
+            ),
+            SizedBox(
+              width: 250,
+              child: DropdownButton<int>(
+                isExpanded: true,
+                value:
+                    [
+                      16,
+                      256,
+                      1024,
+                      4096,
+                    ].map((e) => e * 1024 * 1024).contains(app.fileLimit)
+                    ? app.fileLimit
+                    : null,
+                hint: const Text('Item limit'),
+                items:
+                    {
+                          16: 'Item limit: 16 MiB',
+                          256: 'Item limit: 256 MiB',
+                          1024: 'Item limit: 1 GiB',
+                          4096: 'Item limit: 4 GiB',
+                        }.entries
+                        .map(
+                          (e) => DropdownMenuItem(
+                            value: e.key * 1024 * 1024,
+                            child: Text(
+                              e.value,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        )
+                        .toList(),
+                onChanged: (value) =>
+                    _run(() => app.setFileLimits(itemBytes: value)),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 20),
+      ],
       _columns(
         id: 'clipboard',
         main: _card(
@@ -1167,10 +1363,16 @@ class _ClipboardHomeState extends State<ClipboardHome>
                     color: _Palette.of(context).action,
                   ),
                   const SizedBox(width: 8),
-                  const Expanded(
+                  Expanded(
                     child: Text(
-                      'Latest shared text',
-                      style: TextStyle(
+                      app.item?.kind == 'files'
+                          ? 'Latest shared files'
+                          : app.item?.kind == 'image'
+                          ? 'Latest shared image'
+                          : app.item?.kind == 'mixed'
+                          ? 'Latest shared text & image'
+                          : 'Latest shared text',
+                      style: const TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.w600,
                       ),
@@ -1210,9 +1412,61 @@ class _ClipboardHomeState extends State<ClipboardHome>
                         ),
                       )
                     : SingleChildScrollView(
-                        child: SelectableText(
-                          app.item!.text,
-                          style: const TextStyle(fontSize: 15, height: 1.55),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            if (app.item!.payload.text != null)
+                              SelectableText(
+                                app.item!.text,
+                                style: const TextStyle(
+                                  fontSize: 15,
+                                  height: 1.55,
+                                ),
+                              ),
+                            if (app.item!.payload.files != null) ...[
+                              Text(
+                                '${app.item!.payload.files!.fileCount} files \u00b7 ${(app.item!.payload.totalBytes / (1024 * 1024)).toStringAsFixed(1)} MiB',
+                              ),
+                              const SizedBox(height: 8),
+                              for (final root
+                                  in app.item!.payload.files!.roots.take(50))
+                                Text(root, overflow: TextOverflow.ellipsis),
+                              if (app.item!.payload.files!.roots.length > 50)
+                                Text(
+                                  'and ${app.item!.payload.files!.roots.length - 50} more',
+                                ),
+                              if (app.imageProgress != null) ...[
+                                const SizedBox(height: 12),
+                                LinearProgressIndicator(
+                                  value: app.imageProgress! / 100,
+                                  semanticsLabel: 'Downloading files',
+                                ),
+                              ],
+                            ],
+                            if (app.item!.payload.image != null) ...[
+                              if (app.item!.kind == 'mixed')
+                                const SizedBox(height: 16),
+                              if (app.receivedImage != null)
+                                _SharedImagePreview(
+                                  bytes: app.receivedImage!,
+                                  sender: app.item!.senderName,
+                                )
+                              else
+                                Text(
+                                  'Image · ${app.item!.payload.image!.width} × ${app.item!.payload.image!.height}',
+                                  style: TextStyle(
+                                    color: _Palette.of(context).secondary,
+                                  ),
+                                ),
+                              if (app.imageProgress != null) ...[
+                                const SizedBox(height: 12),
+                                LinearProgressIndicator(
+                                  value: app.imageProgress! / 100,
+                                  semanticsLabel: 'Receiving image',
+                                ),
+                              ],
+                            ],
+                          ],
                         ),
                       ),
               ),
@@ -1230,21 +1484,44 @@ class _ClipboardHomeState extends State<ClipboardHome>
                       color: _Palette.of(context).secondary,
                     ),
                   ),
+                  if (app.filesReady)
+                    OutlinedButton(
+                      onPressed: () => _run(app.showReceivedFolder),
+                      child: const Text('Show in folder'),
+                    ),
+                  if (app.item?.kind == 'files' && app.imageProgress != null)
+                    OutlinedButton(
+                      onPressed: app.cancelFileDownload,
+                      child: const Text('Cancel'),
+                    ),
                   FilledButton.icon(
-                    onPressed: app.item == null || app.paused
+                    onPressed:
+                        app.item == null ||
+                            app.paused ||
+                            app.imageProgress != null
                         ? null
                         : () => _run(app.copyReceived),
                     icon: const Icon(Icons.copy_rounded, size: 17),
-                    label: const Text('Copy'),
+                    label: Text(
+                      app.item?.kind == 'files'
+                          ? (app.needsFileDownload ? 'Download' : 'Copy files')
+                          : app.item?.kind == 'image' ||
+                                app.itemStatus.contains('image needs attention')
+                          ? 'Copy image'
+                          : 'Copy',
+                    ),
                   ),
                 ],
               ),
-              if (app.conflictText != null) ...[
+              if (app.hasConflict) ...[
                 const SizedBox(height: 18),
                 Divider(color: _Palette.of(context).separator),
                 const SizedBox(height: 10),
                 Text(
-                  'Your local copy was preserved. Choose which text to share.',
+                  app.conflictPayload?.png == null &&
+                          app.item?.payload.image == null
+                      ? 'Your local copy was preserved. Choose which text to share.'
+                      : 'Your local copy was preserved. Choose which item to share.',
                   style: TextStyle(
                     color: _Palette.of(context).secondary,
                     fontSize: 13,
@@ -1259,13 +1536,25 @@ class _ClipboardHomeState extends State<ClipboardHome>
                       onPressed: app.item == null
                           ? null
                           : () => _run(app.copyReceived),
-                      child: const Text('Use received text'),
+                      child: Text(
+                        app.item?.payload.image == null
+                            ? (app.item?.kind == 'files'
+                                  ? 'Use received files'
+                                  : 'Use received text')
+                            : 'Use received image',
+                      ),
                     ),
                     OutlinedButton(
                       onPressed: !app.sharing || app.sending
                           ? null
                           : () => _run(app.sendMine),
-                      child: const Text('Send my text'),
+                      child: Text(
+                        app.conflictPayload?.hasFiles == true
+                            ? 'Send my files'
+                            : app.conflictPayload?.png == null
+                            ? 'Send my text'
+                            : 'Send my image',
+                      ),
                     ),
                   ],
                 ),
@@ -1316,6 +1605,32 @@ class _ClipboardHomeState extends State<ClipboardHome>
                       app.sending ? 'Confirming delivery…' : 'Send text',
                     ),
                   ),
+                  if (app.clipboard.supportsFiles) ...[
+                    OutlinedButton(
+                      onPressed: !app.sharing || app.sending
+                          ? null
+                          : () => _run(() => app.pickFiles()),
+                      child: const Text('Send files\u2026'),
+                    ),
+                    OutlinedButton(
+                      onPressed: !app.sharing || app.sending
+                          ? null
+                          : () => _run(() => app.pickFiles(folder: true)),
+                      child: const Text('Send folder\u2026'),
+                    ),
+                  ],
+                  if (app.clipboard.supportsFiles)
+                    OutlinedButton(
+                      onPressed:
+                          !app.sharing || app.sending || app.packagingFiles
+                          ? null
+                          : () => _run(app.sendAsZip),
+                      child: Text(
+                        app.packagingFiles
+                            ? 'Preparing ZIP...'
+                            : 'Send folder as ZIP...',
+                      ),
+                    ),
                   if (Platform.isIOS && app.sharing) ...[
                     Text(
                       'Paste & send immediately',
@@ -1536,8 +1851,13 @@ class _ClipboardHomeState extends State<ClipboardHome>
       style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
     ),
     subtitle: Text(
-      device['online'] == true
-          ? _receiptLabel(device['status'] as String?)
+      device['needsUpdate'] == true
+          ? 'Needs update · text only'
+          : device['online'] == true
+          ? _receiptLabel(
+              device['status'] as String?,
+              device['progress'] as int?,
+            )
           : 'Offline',
       style: TextStyle(fontSize: 13, color: _Palette.of(context).secondary),
     ),
@@ -1567,8 +1887,10 @@ class _ClipboardHomeState extends State<ClipboardHome>
         : null,
   );
 
-  String _receiptLabel(String? status) => switch (status) {
+  String _receiptLabel(String? status, int? progress) => switch (status) {
     'applied' => 'Ready to paste',
+    'downloading' =>
+      progress == null ? 'Downloading files' : 'Downloading $progress%',
     'needsAction' => 'Available · copy on this device',
     'failed' => 'Clipboard needs attention',
     'paused' => 'Sharing paused',
@@ -1705,6 +2027,51 @@ class _ClipboardHomeState extends State<ClipboardHome>
       if (consent != true) return;
     }
     await _run(() => app.setAutomatic(enabled));
+  }
+
+  Future<void> _automaticFiles(bool enabled) async {
+    if (enabled &&
+        !await _confirmChange(
+          'Share files automatically?',
+          'Copied files and folders will be sent to trusted members. Received files download to this PC and can replace your clipboard, within your auto-download limit. Larger items wait for Download. Use Copy, not Cut.',
+          'Enable files',
+        )) {
+      return;
+    }
+    await _run(() => app.setAutomaticFiles(enabled));
+  }
+
+  Future<void> _automaticImages(bool enabled) async {
+    if (enabled &&
+        !await _confirmChange(
+          'Share images automatically?',
+          'Images you copy will be sent to every trusted member. Incoming images can replace your clipboard. Pause before copying anything private.',
+          'Enable images',
+        )) {
+      return;
+    }
+    await _run(() => app.setAutomaticImages(enabled));
+  }
+
+  Future<void> _update() async {
+    await _run(() async {
+      final update = await app.prepareUpdate();
+      if (update == null) return;
+      if (!mounted) {
+        await update.discard();
+        return;
+      }
+      final install = await _confirmChange(
+        'Install Hopboard ${update.version}?',
+        'The download is verified. Hopboard will close to install the update. Windows may show a SmartScreen warning because the installer is unsigned.',
+        'Install update',
+      );
+      if (install && mounted) {
+        await app.installUpdate(update);
+      } else {
+        await update.discard();
+      }
+    });
   }
 
   Future<void> _manualJoin() async {

@@ -9,6 +9,7 @@ import 'package:local_clipboard/app/ui.dart';
 import 'package:local_clipboard/core/identity.dart';
 import 'package:local_clipboard/core/host.dart';
 import 'package:local_clipboard/core/protocol.dart';
+import 'package:local_clipboard/core/content.dart';
 import 'package:local_clipboard/platform/discovery.dart';
 
 import 'support.dart';
@@ -379,6 +380,70 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
+  testWidgets(
+    'file controls and progress fit narrow large-text and desktop layouts',
+    (tester) async {
+      final app = await testController(Identity('files', '', ''));
+      (app.clipboard as FakeClipboard).filesEnabled = true;
+      app.item = ClipItem(
+        id: 'files',
+        sequence: 1,
+        senderId: 'other',
+        senderName: 'Other PC',
+        lifetime: fileLifetime,
+        payload: ClipPayload.fromJson({
+          'kind': 'files',
+          'entries': [
+            {'i': 0, 'path': 'Reports', 'dir': true},
+            {'i': 1, 'path': 'Reports/a.zip', 'size': 100},
+          ],
+          'roots': ['Reports'],
+          'totalBytes': 100,
+          'fileCount': 1,
+        }),
+      );
+      app.itemStatus = 'Download to copy files';
+      tester.view.devicePixelRatio = 1;
+      addTearDown(() {
+        app.dispose();
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+        tester.platformDispatcher.clearAllTestValues();
+      });
+      await tester.pumpWidget(
+        RepaintBoundary(
+          key: const ValueKey('dashboard-capture'),
+          child: ClipboardApp(controller: app),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Clipboard').last);
+      for (final width in [1440.0, 320.0]) {
+        tester.view.physicalSize = Size(width, 900);
+        tester.platformDispatcher.textScaleFactorTestValue = width == 320
+            ? 2
+            : 1;
+        await tester.pumpAndSettle();
+        await tester.ensureVisible(find.text('Download').last);
+        expect(find.text('Reports'), findsOneWidget);
+        expect(find.text('Download'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+        if (width == 1440) await _captureDashboard(tester, 'windows-files');
+        app.imageProgress = 45;
+        app.itemStatus = 'Downloading files 45%';
+        app.notifyListeners();
+        await tester.pumpAndSettle();
+        await tester.ensureVisible(find.text('Cancel').last);
+        expect(find.byType(LinearProgressIndicator), findsOneWidget);
+        expect(tester.takeException(), isNull);
+        app.imageProgress = null;
+        app.notifyListeners();
+        await tester.pumpAndSettle();
+      }
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
   testWidgets('automatic sharing still requires explicit consent', (
     tester,
   ) async {
@@ -391,15 +456,21 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('Clipboard').last);
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.byType(SwitchListTile));
-    await tester.tap(find.byType(SwitchListTile));
+    await tester.ensureVisible(
+      find.widgetWithText(SwitchListTile, 'Automatic clipboard sharing'),
+    );
+    await tester.tap(
+      find.widgetWithText(SwitchListTile, 'Automatic clipboard sharing'),
+    );
     await tester.pumpAndSettle();
     expect(find.text('Enable automatic sharing?'), findsOneWidget);
     expect(app.automatic, isFalse);
     await tester.tap(find.text('Cancel'));
     await tester.pumpAndSettle();
     expect(app.automatic, isFalse);
-    await tester.tap(find.byType(SwitchListTile));
+    await tester.tap(
+      find.widgetWithText(SwitchListTile, 'Automatic clipboard sharing'),
+    );
     await tester.pumpAndSettle();
     await tester.tap(find.text('Enable sharing'));
     await tester.pumpAndSettle();

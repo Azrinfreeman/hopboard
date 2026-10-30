@@ -5,9 +5,12 @@
 
 #include "flutter_window.h"
 #include "utils.h"
+#include "updater.h"
 
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
                       _In_ wchar_t *command_line, _In_ int show_command) {
+  // The helper never creates an app window or takes the single-instance mutex.
+  if (const auto update = RunUpdateHelper()) return *update;
   // One process owns this user's identity, clipboard listener, and tray icon.
   HANDLE instance_mutex = CreateMutexW(nullptr, FALSE, L"Local\\LocalClipboard.v1");
   const DWORD mutex_error = GetLastError();

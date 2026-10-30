@@ -8,6 +8,11 @@
 #include <shellapi.h>
 #include <memory>
 #include <optional>
+#include <thread>
+#include <vector>
+#include <string>
+
+struct ClipboardImageJob;
 
 class ClipboardBridge {
  public:
@@ -22,6 +27,14 @@ class ClipboardBridge {
   HANDLE network_notification_ = nullptr;
   NOTIFYICONDATAW tray_{};
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> channel_;
+  std::thread image_worker_;
+  std::shared_ptr<ClipboardImageJob> image_job_;
+  std::vector<uint8_t> image_bytes_, write_image_;
+  std::string image_token_, write_token_;
+  uint64_t image_serial_ = 0;
+  uint64_t image_write_generation_ = 0;
+  size_t write_size_ = 0;
+  void CompleteImage();
   void Show();
   void Action(const char* action);
 };

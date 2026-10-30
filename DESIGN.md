@@ -78,6 +78,8 @@ Reduced motion uses immediate presentation. Controllers are disposed and the spr
 
 ## Behavior boundaries
 
+Windows rich-content items use the same reading surface and state line. Images have bounded previews; files show size and up to 50 root names. Show Download before a file is ready, Cancel during transfer, and Copy files / Show in folder afterward. Display member download percentages from validated receipts. Ready to paste requires a successful native clipboard write and readback. File/image consent stays separate; limits and Clear received files remain adjacent to file consent. These controls wrap at narrow widths and retain accessible names.
+
 Preserve controller/native boundaries, consent, lifecycle, validation, persistence, request limits, invitation cleanup, clipboard conflict handling, receipt semantics, and the iOS native paste view. UI actions continue to use the existing awaited controller actions and error handling.
 
 Trust removal and clearing shared text use explicit consequence confirmations. Clearing app-held text is not represented as erasing operating-system clipboards/history. Reset retains the original storage-failure eligibility and confirmation flow.

@@ -12,11 +12,17 @@ Hopboard moves text between your own devices over your local network. It needs n
 - **Clipboard privacy:** copies that password managers mark as private are never sent automatically.
 - **Tested:** automated tests cover real TLS connections and attack cases such as spoofed hosts, guessed codes and connection floods.
 
-Built with Flutter and Dart for Windows and Android (iPhone source included, not yet built). Version 0.1.2 is a development build; physical phone testing and the reliability gates in [IMPLEMENTATION.md](IMPLEMENTATION.md) are required before public release. This code has not had an independent security audit. The Windows installer is unsigned, so Windows SmartScreen will warn when you run it.
+Built with Flutter and Dart for Windows and Android (iPhone source included, not yet built). Current source is 0.2.0-dev; the published 0.1.2 development build predates image/file sharing. Physical-device testing and the reliability gates in [IMPLEMENTATION.md](IMPLEMENTATION.md) are required before public release. This code has not had an independent security audit. The Windows installer is unsigned, so Windows SmartScreen will warn when you run it.
 
 ## Download
 
 Get the Windows installer from the [latest release](https://github.com/Azrinfreeman/hopboard/releases/latest). It is an unsigned development build, so Windows SmartScreen will warn; check the download against the attached `.sha256` file. An Android APK is not on the release yet.
+
+## In development: Windows images, files and folders
+
+The 0.2.0 source supports clipboard images, mixed text/image copies, Explorer files and folders, file/folder pickers, drag onto the window, and explicit ZIP packaging. Automatic image and file sharing each require separate consent. Use **Copy**, rather than Cut, for Explorer transfers. Windows clipboard integration passes local automated checks; two-PC Explorer/Office paste remains unverified. No 0.2.0 installer has been published.
+
+Files up to 256 MiB download automatically when file consent and automatic sharing are enabled; larger items wait for **Download**. The item limit defaults to 4 GiB and can be reduced. Files are verified before **Ready to paste** appears. Phone image/file workflows remain pending.
 
 ## What's new in 0.1.2
 
@@ -63,7 +69,7 @@ iOS source is included. An iPhone build requires a Mac, Xcode, a signing team, a
 
 | Device | Automatic behavior | Explicit action |
 | --- | --- | --- |
-| Windows | Optional event-driven capture and incoming updates, including tray mode | Paste & Send / Copy |
+| Windows | Optional event-driven text capture; images and files require separate consent, including tray mode | Paste & Send / Copy, Send files/folder, Download, Show in folder |
 | Android 10+ | Optional capture and incoming updates while the app has focus | Paste & Send / Copy |
 | iPhone, iOS 16+ | Reconnect and show the latest item while active | Native Paste & Send / Copy |
 
@@ -71,7 +77,11 @@ Phones cannot provide unrestricted background clipboard sharing. Moving a phone 
 
 The app preserves text copied while disconnected or outside the phone app. If it cannot safely replace the clipboard, choose **Use received text** or **Send my text**. Simultaneous sends are resolved explicitly. “Available in app” and “Ready to paste” are separate states.
 
-Text is limited to 64 KiB in UTF-8. One latest item stays in memory for five minutes. Expiry and host **Clear shared text** remove app state; they do not erase an OS clipboard, text pasted elsewhere, or another app's clipboard history. Automatic mode shares with every trusted member: pause before copying private text. Copies that their app marks private, such as passwords from a password manager, are never sent automatically; use **Paste & Send** to share one deliberately. On Windows, text the app places on the clipboard is excluded from Win+V history and Cloud Clipboard. Images, files, history, and cloud sync are deferred.
+Text is limited to 64 KiB in UTF-8 and expires after five minutes. File items expire after fifteen minutes. Expiry and host **Clear** remove shared app state; they do not erase an OS clipboard, pasted copies, or another app's clipboard history. Automatic mode shares with every trusted member: pause before copying private content. Copies that their app marks private, such as passwords from a password manager, are never sent automatically; use **Paste & Send** to share one deliberately. On Windows, items the app places on the clipboard are excluded from Win+V history and Cloud Clipboard. Mobile images/files, history, and cloud sync remain pending.
+
+Windows can share PNG clipboard images and mixed text/image copies, with image previews and manual copying. Images are limited to 16 MiB and 50 megapixels and stay in memory. Received files are written to `%LOCALAPPDATA%\Hopboard\Received` so Explorer can paste them. This private cache is not indexed and received files carry Windows' downloaded-content marker. Retained files count toward a cache limit of twice your item limit, and downloads require at least 1 GiB of free disk space afterward. Files are removed after expiry/clear once the clipboard no longer references them, at most one hour after expiry, and on startup, **Clear received files**, Quit or uninstall. Clearing this cache can invalidate file paths still on your clipboard. ZIP packaging also uses this directory temporarily; source files are never modified and received ZIPs are never extracted automatically.
+
+The Windows Update action uses the internet only when pressed and verifies the release installer before launch; actual installer validation is still required. See [RICH_CONTENT_PLAN.md](RICH_CONTENT_PLAN.md) for implementation status and remaining device checks.
 
 ## Connection and privacy
 
@@ -79,7 +89,7 @@ Text is limited to 64 KiB in UTF-8. One latest item stays in memory for five min
 - Invitations expire after two minutes, are single-use, and require host approval. Saved credentials reconnect without repeating pairing. The host can revoke devices.
 - Six-digit pairing uses PointyCastle SRP-6a (3072-bit group, SHA-256), mutual proofs, and a certificate-bound confirmation before approval or credential issuance. The code is never transmitted, advertised, logged, or persisted. A bootstrap TLS socket is quarantined until the code authenticates its exact certificate; normal sessions always enforce the saved pin. Use the updated app on both devices for code pairing.
 - Windows DPAPI, Android KeyStore-backed AES-GCM, and iOS Keychain protect stored identity/trust. If that storage becomes unreadable, for example after a Windows password reset, the startup screen offers **Reset this device**, which deletes the identity and pairings so you can pair again. The app does not persist shared clipboard text. Your OS or other clipboard tools may retain their own copies.
-- The host and paired members can read shared text. QR invitations contain a temporary secret; show or transfer them only to the intended device.
+- The host and paired members can read shared content. QR invitations contain a temporary secret; show or transfer them only to the intended device.
 - Discovery uses `_localclip._tcp` and advertises identity/version only. Discovered addresses are checked against the stored certificate pin. Direct invitations remain available when multicast is blocked.
 - v1 accepts private/local IPv4 only. Public addresses, DNS hostnames, IPv6, cloud relays, router forwarding, and automatic host migration are outside this version.
 

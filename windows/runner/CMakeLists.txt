@@ -9,6 +9,8 @@ project(runner LANGUAGES CXX)
 add_executable(${BINARY_NAME} WIN32
   "flutter_window.cpp"
   "clipboard_bridge.cpp"
+  "clipboard_image.cpp"
+  "updater.cpp"
   "main.cpp"
   "utils.cpp"
   "win32_window.cpp"
@@ -35,6 +37,7 @@ target_compile_definitions(${BINARY_NAME} PRIVATE "NOMINMAX")
 # dependencies here.
 target_link_libraries(${BINARY_NAME} PRIVATE flutter flutter_wrapper_app)
 target_link_libraries(${BINARY_NAME} PRIVATE iphlpapi ws2_32 crypt32)
+target_link_libraries(${BINARY_NAME} PRIVATE windowscodecs ole32 gdi32 advapi32)
 target_link_libraries(${BINARY_NAME} PRIVATE "dwmapi.lib")
 target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
 

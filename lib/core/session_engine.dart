@@ -4,12 +4,14 @@ import 'dart:convert';
 import 'package:crypto/crypto.dart';
 
 import 'protocol.dart';
+import 'content.dart';
 
 class _Accepted {
-  _Accepted(this.hash, this.ack, this.age);
+  _Accepted(this.hash, this.ack, this.age, this.lifetime);
   final String hash;
   final Map<String, dynamic> ack;
   final Duration age;
+  final Duration lifetime;
 }
 
 /// Authoritative ordering, bounded deduplication, and optimistic conflict checks.
@@ -28,11 +30,13 @@ class SessionEngine {
   final _accepted = <String, LinkedHashMap<String, _Accepted>>{};
   final _rate = <String, Queue<Duration>>{};
 
-  Map<String, dynamic> snapshot() => {
+  Map<String, dynamic> snapshot({bool content = true}) => {
     'type': 'state',
     'epoch': epoch,
     'seq': sequence,
-    'item': item?.expired == false ? item!.toJson() : null,
+    'item': item?.expired == false && (content || item!.payload.isText)
+        ? item!.toJson()
+        : null,
   };
 
   Map<String, dynamic> publish(
@@ -41,10 +45,12 @@ class SessionEngine {
     Map<String, dynamic> message,
   ) {
     final requestId = field(message, 'requestId', max: 64);
-    final text = validText(message['text']);
-    final hash = sha256.convert(utf8.encode(text)).toString();
+    final payload = ClipPayload.fromJson(message);
+    final hash = sha256
+        .convert(utf8.encode(jsonEncode(payload.toJson())))
+        .toString();
     final cache = _accepted.putIfAbsent(deviceId, LinkedHashMap.new);
-    cache.removeWhere((_, value) => _now() - value.age > itemLifetime);
+    cache.removeWhere((_, value) => _now() - value.age > value.lifetime);
     final previous = cache[requestId];
     if (previous != null) {
       if (previous.hash != hash) {
@@ -75,8 +81,8 @@ class SessionEngine {
       sequence: ++sequence,
       senderId: deviceId,
       senderName: deviceName,
-      text: text,
-      lifetime: itemLifetime,
+      payload: payload,
+      lifetime: payload.kind == 'files' ? fileLifetime : itemLifetime,
     );
     final ack = <String, dynamic>{
       'type': 'ack',
@@ -84,7 +90,12 @@ class SessionEngine {
       'itemId': item!.id,
       'seq': sequence,
     };
-    cache[requestId] = _Accepted(hash, ack, _now());
+    cache[requestId] = _Accepted(
+      hash,
+      ack,
+      _now(),
+      payload.kind == 'files' ? fileLifetime : itemLifetime,
+    );
     while (cache.length > 256) {
       cache.remove(cache.keys.first);
     }
