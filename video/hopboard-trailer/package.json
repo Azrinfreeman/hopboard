@@ -6,9 +6,9 @@
   "scripts": {
     "studio": "remotion studio src/index.ts --port=3090",
     "check": "tsc --noEmit",
-    "stills": "node scripts/qa.mjs",
     "render": "remotion render src/index.ts HopboardTrailer out/Hopboard-Trailer-60s.mp4 --codec=h264 --crf=18 --audio-codec=aac",
-    "render:nobgm": "remotion render src/index.ts HopboardTrailer out/Hopboard-Trailer-60s-NoMusic.mp4 --props=props-nobgm.json --codec=h264 --crf=18 --audio-codec=aac"
+    "render:nobgm": "remotion render src/index.ts HopboardTrailer out/Hopboard-Trailer-60s-NoMusic.mp4 --props=props-nobgm.json --codec=h264 --crf=18 --audio-codec=aac",
+    "posters": "node scripts/posters.mjs"
   },
   "dependencies": {
     "@remotion/cli": "4.0.484",
@@ -20,7 +20,6 @@
   "devDependencies": {
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
-    "playwright-core": "1.58.2",
     "typescript": "~5.9.0"
   }
 }

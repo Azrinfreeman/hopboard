@@ -1,6 +1,6 @@
 ﻿# Validation record
 
-Development version 0.1.1, checked on 12 October 2026. This records observed results separately from the physical-device release criteria in IMPLEMENTATION.md.
+Development version 0.1.1, checked on 12 October 2026. This records observed results separately from the physical-device checks that remain open.
 
 ## Verified
 

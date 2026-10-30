@@ -29,7 +29,7 @@ Hopboard moves text between your own devices over your local network. It needs n
 - **Clipboard privacy:** copies that password managers mark as private are never sent automatically.
 - **Tested:** automated tests cover real TLS connections and attack cases such as spoofed hosts, guessed codes and connection floods.
 
-Built with Flutter and Dart for Windows and Android (iPhone source included, not yet built). Current source is 0.2.0-dev; the published 0.1.2 development build predates image/file sharing. Physical-device testing and the reliability gates in [IMPLEMENTATION.md](IMPLEMENTATION.md) are required before public release. This code has not had an independent security audit. The Windows installer is unsigned, so Windows SmartScreen will warn when you run it.
+Built with Flutter and Dart for Windows and Android (iPhone source included, not yet built). Current source is 0.2.0-dev; the published 0.1.2 development build predates image/file sharing. Physical-device testing, listed in [VALIDATION.md](VALIDATION.md), is required before a public release. This code has not had an independent security audit. The Windows installer is unsigned, so Windows SmartScreen will warn when you run it.
 
 ## Download
 
@@ -90,7 +90,7 @@ iOS source is included. An iPhone build requires a Mac, Xcode, a signing team, a
 | Android 10+ | Optional capture and incoming updates while the app has focus | Paste & Send / Copy |
 | iPhone, iOS 16+ | Reconnect and show the latest item while active | Native Paste & Send / Copy |
 
-Phones cannot provide unrestricted background clipboard sharing. Moving a phone host to the background stops its session. A joined phone reconnects when reopened. **Keep screen awake** is available during phone hosting. Platform sources and the interaction contract are in [IMPLEMENTATION.md](IMPLEMENTATION.md).
+Phones cannot provide unrestricted background clipboard sharing. Moving a phone host to the background stops its session. A joined phone reconnects when reopened. **Keep screen awake** is available during phone hosting.
 
 The app preserves text copied while disconnected or outside the phone app. If it cannot safely replace the clipboard, choose **Use received text** or **Send my text**. Simultaneous sends are resolved explicitly. “Available in app” and “Ready to paste” are separate states.
 
@@ -159,4 +159,4 @@ The unsigned command checks compilation; a signed archive/device run requires pr
 
 `test/` exercises real pinned TLS loopback sessions and controllable clipboard adapters: message limits, pairing, revocation, ordering, deduplication, rapid copies, pause/resume, reconnection, and clipboard races. `integration_test/windows_smoke_test.dart` exercises native encrypted storage, listener/tray initialization, and UI startup without reading or replacing the user's clipboard.
 
-See [VALIDATION.md](VALIDATION.md) for verified results and remaining gates. The seamless-sharing criteria, physical-device matrix, and expansion plan are in [IMPLEMENTATION.md](IMPLEMENTATION.md).
+See [VALIDATION.md](VALIDATION.md) for verified results and remaining gates.
