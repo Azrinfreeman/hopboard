@@ -98,7 +98,7 @@ Text is limited to 64 KiB in UTF-8 and expires after five minutes. File items ex
 
 Windows can share PNG clipboard images and mixed text/image copies, with image previews and manual copying. Images are limited to 16 MiB and 50 megapixels and stay in memory. Received files are written to `%LOCALAPPDATA%\Hopboard\Received` so Explorer can paste them. This private cache is not indexed and received files carry Windows' downloaded-content marker. Retained files count toward a cache limit of twice your item limit, and downloads require at least 1 GiB of free disk space afterward. Files are removed after expiry/clear once the clipboard no longer references them, at most one hour after expiry, and on startup, **Clear received files**, Quit or uninstall. Clearing this cache can invalidate file paths still on your clipboard. ZIP packaging also uses this directory temporarily; source files are never modified and received ZIPs are never extracted automatically.
 
-The Windows Update action uses the internet only when pressed and verifies the release installer before launch; actual installer validation is still required. See [RICH_CONTENT_PLAN.md](RICH_CONTENT_PLAN.md) for implementation status and remaining device checks.
+The Windows Update action uses the internet only when pressed and verifies the release installer before launch; actual installer validation is still required. Remaining device checks are listed in [VALIDATION.md](VALIDATION.md).
 
 ## Connection and privacy
 
