@@ -2,6 +2,23 @@
 
 **Copy on one device. Paste on another. Nothing leaves your Wi-Fi.**
 
+[![Watch the 60-second Hopboard trailer](docs/media/poster-hero.jpg)](docs/media/Hopboard-Trailer.mp4)
+
+<p align="center"><a href="docs/media/Hopboard-Trailer.mp4"><b>▶ Watch the 60-second trailer</b></a> (MP4, 6.8 MB)</p>
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/media/poster-copy-paste.jpg" alt="Copy here, paste there: Work laptop, Studio PC and an Android phone on the same Wi-Fi"></td>
+    <td width="50%"><img src="docs/media/poster-paste.jpg" alt="Paste on another PC and keep going"></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/media/poster-phone.jpg" alt="Your phone joins in: Paste &amp; Send and Copy on Android"></td>
+    <td width="50%"><img src="docs/media/poster-files.jpg" alt="Files, folders and ZIPs on Windows: development preview"></td>
+  </tr>
+</table>
+
+<sub>Trailer and posters use illustrated app screens with invented devices and content, not recordings of real devices. Windows image and file sharing is a development preview; the Android scenes show foreground text sharing.</sub>
+
 Hopboard moves text between your own devices over your local network. It needs no account, cloud server or internet connection. Devices pair once with a six-digit code and the host approves each one. Shared text lives in memory for five minutes and is never written to disk.
 
 **Security design**
@@ -16,11 +33,11 @@ Built with Flutter and Dart for Windows and Android (iPhone source included, not
 
 ## Download
 
-Get the Windows installer from the [latest release](https://github.com/Azrinfreeman/hopboard/releases/latest). It is an unsigned development build, so Windows SmartScreen will warn; check the download against the attached `.sha256` file. An Android APK is not on the release yet.
+Get the Windows installer from the [releases page](https://github.com/Azrinfreeman/hopboard/releases). **0.2.0-dev** is a pre-release with image, file and folder sharing for Windows; **0.1.2** is the earlier text-only build. Both are unsigned development builds, so Windows SmartScreen will warn; check the download against the attached `.sha256` file. An Android APK is not on a release yet.
 
 ## In development: Windows images, files and folders
 
-The 0.2.0 source supports clipboard images, mixed text/image copies, Explorer files and folders, file/folder pickers, drag onto the window, and explicit ZIP packaging. Automatic image and file sharing each require separate consent. Use **Copy**, rather than Cut, for Explorer transfers. Windows clipboard integration passes local automated checks; two-PC Explorer/Office paste remains unverified. No 0.2.0 installer has been published.
+The 0.2.0 source supports clipboard images, mixed text/image copies, Explorer files and folders, file/folder pickers, drag onto the window, and explicit ZIP packaging. Automatic image and file sharing each require separate consent. Use **Copy**, rather than Cut, for Explorer transfers. Windows clipboard integration passes local automated checks; two-PC Explorer/Office paste remains unverified. The 0.2.0-dev installer is published as a pre-release.
 
 Files up to 256 MiB download automatically when file consent and automatic sharing are enabled; larger items wait for **Download**. The item limit defaults to 4 GiB and can be reduced. Files are verified before **Ready to paste** appears. Phone image/file workflows remain pending.
 
@@ -37,13 +54,13 @@ Files up to 256 MiB download automatically when file consent and automatic shari
 
 ### Windows
 
-Run `dist/Hopboard-Setup-0.1.2-x64.exe` for a per-user installation with a Start menu shortcut, optional desktop shortcut, and uninstaller. It includes the required x64 Visual C++ runtime DLLs and does not require administrator rights. Quit any running copy from its tray menu before installing or updating. The installer and application are unsigned.
+Download and run `Hopboard-Setup-<version>-x64.exe` from the releases page for a per-user installation with a Start menu shortcut, optional desktop shortcut, and uninstaller. It includes the required x64 Visual C++ runtime DLLs and does not require administrator rights. Quit any running copy from its tray menu before installing or updating. The installer and application are unsigned.
 
 For a portable copy:
 
 Extract `dist/Hopboard-Windows-x64.zip` and run `local_clipboard.exe` from the extracted folder. Keep its DLLs and `data` folder together. The app is unsigned. A machine without the Visual C++ runtime may need Microsoft's [x64 redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist).
 
-When updating, choose **Quit** from the existing app's tray menu before replacing its folder or opening the new version. Closing its window alone keeps the older process running. Use version 0.1.2 on both devices for six-digit pairing.
+When updating, choose **Quit** from the existing app's tray menu before replacing its folder or opening the new version. Closing its window alone keeps the older process running. Use version 0.1.2 or later on both devices for six-digit pairing; use 0.2.0-dev on both to share images and files.
 
 1. Connect both devices to the same Wi-Fi. Prefer the Windows computer as host.
 2. Select the Wi-Fi interface and choose **Start session**. Allow inbound access on **Private networks** if Windows asks. Avoid guest Wi-Fi with device isolation.

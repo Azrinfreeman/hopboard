@@ -27,11 +27,11 @@ export const Network:React.FC<SceneProps>=({title='Copy here. Paste there.',capt
 export const Pair:React.FC<SceneProps>=({title='Pair once.',caption='Join the host with its six-digit code.'})=>{
  const f=useCurrentFrame();
  return <Surface><Brand/><Heading title={title} top={175} size={96}/>
- <div style={{position:'absolute',left:110,top:323,fontSize:44,lineHeight:1.3}}><strong>Host PC</strong><div style={{color:T.blue}}>Start session ? Add device</div></div>
+ <div style={{position:'absolute',left:110,top:323,fontSize:44,lineHeight:1.3}}><strong>Host PC</strong><div style={{color:T.blue}}>Start session → Add device</div></div>
  <Img src={staticFile('textures/host-code.png')} style={{position:'absolute',left:110,top:463,width:520,borderRadius:20,boxShadow:'0 20px 60px #0002',opacity:ramp(f,8,24)}}/>
- <div style={{position:'absolute',left:900,top:173,fontSize:44,lineHeight:1.3}}><strong>Other device</strong><div style={{color:T.blue}}>Enter pairing code</div><div style={{color:T.muted}}>Select host ? enter code ? Connect</div></div>
+ <div style={{position:'absolute',left:900,top:173,fontSize:44,lineHeight:1.3}}><strong>Other device</strong><div style={{color:T.blue}}>Enter pairing code</div><div style={{color:T.muted}}>Select host → enter code → Connect</div></div>
  <Img src={staticFile('textures/join-dialog.png')} style={{position:'absolute',left:1015,top:390,width:510,borderRadius:20,boxShadow:'0 20px 60px #0002',opacity:ramp(f,35,24)}}/>
- <div style={{position:'absolute',left:94,top:885,fontSize:44,color:T.muted}}>Same Wi-Fi ? allow Private-network access</div>
+ <div style={{position:'absolute',left:94,top:885,fontSize:44,color:T.muted}}>Same Wi-Fi · allow Private-network access</div>
  <Caption text={caption}/></Surface>;
 };
 
@@ -70,11 +70,11 @@ export const Files:React.FC<SceneProps>=({title='Files. Folders. ZIPs.',caption=
  <div style={{position:'absolute',left:790,top:360,width:1035,height:535,borderRadius:25,overflow:'hidden',border:'1px solid #3a3a3c',background:'#1c1c1e'}}>
  <Img src={staticFile('textures/files-download.png')} style={{position:'absolute',width:1035,top:-200,opacity:.2}}/>
  <div style={{position:'absolute',inset:0,padding:'32px 42px',background:'#1c1c1eea'}}>
- <div style={{fontSize:40,color:'#aeaeb2'}}>Transfer workflow ? illustration</div>
+ <div style={{fontSize:40,color:'#aeaeb2'}}>Transfer workflow · illustration</div>
  <div style={{marginTop:40,display:'flex',gap:22,alignItems:'center',fontSize:48}}><Icon name="folder" size={52} color={T.lightBlue}/>Project assets</div>
  <div style={{marginTop:35,height:9,borderRadius:12,background:'#3a3a3c',overflow:'hidden'}}><div style={{height:'100%',width:`${100*ramp(f,45,40)}%`,background:verified?'#82d39c':T.lightBlue}}/></div>
  <div style={{marginTop:36,fontSize:58,color:verified?'#82d39c':T.bg,display:'flex',gap:20,alignItems:'center'}}><Icon name={verified?'check':'file'} size={52}/>{verified?'Ready to paste':downloading?'Downloading & verifying':'Download'}</div>
- <div style={{marginTop:20,fontSize:40,color:'#aeaeb2'}}>{verified?'Copy files ? paste in Explorer':'Your file is checked before clipboard use.'}</div>
+ <div style={{marginTop:20,fontSize:40,color:'#aeaeb2'}}>{verified?'Copy files → paste in Explorer':'Your file is checked before clipboard use.'}</div>
  </div></div><Caption text={caption} dark/></Surface>;
 };
 
