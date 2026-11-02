@@ -19,6 +19,25 @@ class _PermissionDeniedClipboard extends FakeClipboard {
   }
 }
 
+// Hold only the host controller's acknowledgement; transport and state
+// broadcasts still use the real loopback session.
+class _HeldAckHost extends LocalHost {
+  _HeldAckHost(this.delegate)
+    : super(delegate.identity, delegate.trust, delegate.name);
+  final LocalHost delegate;
+  Map<String, dynamic>? ack;
+
+  @override
+  Map<String, dynamic> publish(Map<String, dynamic> message) {
+    ack = delegate.publish(message);
+    return {'type': 'members', 'devices': <dynamic>[]};
+  }
+
+  @override
+  void receipt(String id, Map<String, dynamic> message) =>
+      delegate.receipt(id, message);
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   late Identity certificate;
@@ -54,6 +73,284 @@ void main() {
     a.dispose();
     b.dispose();
   });
+
+  Future<void> restartWithOldText({
+    required bool hostReceives,
+    bool automatic = true,
+    bool private = false,
+    bool image = false,
+    bool files = false,
+    bool unreadable = false,
+  }) async {
+    await approval?.cancel();
+    await b.leave();
+    await a.leave();
+    a.dispose();
+    b.dispose();
+    a = await testController(
+      Identity('Desktop A', certificate.certificate, certificate.privateKey),
+    );
+    b = await testController(
+      Identity('Desktop B', certificate.certificate, certificate.privateKey),
+      automatic: automatic,
+    );
+    final old = (hostReceives ? a : b).clipboard as FakeClipboard;
+    old.text = 'ordinary startup text';
+    old.revision = 1;
+    old.sensitive = private;
+    if (image) old.png = Uint8List.fromList([1]);
+    if (files) old.filePaths = ['unused-startup-file'];
+    if (unreadable) old.readFailure = PlatformException(code: 'busy');
+    await a.startHost(LanInterface('loopback', '127.0.0.1'), port: 0);
+    approval = a.host!.pairing.stream.listen((request) => request.decide(true));
+    if (!hostReceives) await a.sendText('initial shared item');
+    await b.pair(a.host!.invite().encode());
+    await eventually(() => b.connected && b.members.length == 2);
+  }
+
+  test(
+    'reconnect and duplicate snapshots keep startup text until a fresh item',
+    () async {
+      await restartWithOldText(hostReceives: false);
+      final saved = b.selectedHost!;
+      await b.leave();
+      await b.joinSaved(saved);
+      await eventually(() => b.item?.text == 'initial shared item');
+      a.host!.refreshContent();
+      expect((b.clipboard as FakeClipboard).text, 'ordinary startup text');
+      // The next live state orders the assertion after the duplicate state.
+      // Exactly one write below proves the replay did not replace startup text.
+      await a.sendText('snapshot barrier');
+      await eventually(() => b.item?.text == 'snapshot barrier');
+      await eventually(
+        () => (b.clipboard as FakeClipboard).text == 'snapshot barrier',
+      );
+      expect((b.clipboard as FakeClipboard).writes, 1);
+    },
+  );
+
+  for (final kind in ['private', 'image', 'files', 'unreadable']) {
+    test('$kind startup content remains protected from fresh text', () async {
+      await restartWithOldText(
+        hostReceives: false,
+        private: kind == 'private',
+        image: kind == 'image',
+        files: kind == 'files',
+        unreadable: kind == 'unreadable',
+      );
+      await a.sendText('fresh remote');
+      await eventually(() => b.item?.text == 'fresh remote');
+      final cb = b.clipboard as FakeClipboard;
+      expect(cb.text, 'ordinary startup text');
+      expect(cb.writes, 0);
+      expect(
+        b.itemStatus,
+        contains(
+          kind == 'unreadable'
+              ? 'could not be checked'
+              : 'local copy is protected',
+        ),
+      );
+    });
+  }
+
+  test(
+    'first automatic enable preserves displayed item then accepts fresh text',
+    () async {
+      await restartWithOldText(hostReceives: false, automatic: false);
+      final cb = b.clipboard as FakeClipboard;
+      await b.setAutomatic(true);
+      expect(cb.text, 'ordinary startup text');
+      expect(cb.writes, 0);
+      await a.sendText('fresh after enable');
+      await eventually(() => cb.text == 'fresh after enable');
+      await b.setAutomatic(false);
+      cb.userCopy('copied while automatic was off');
+      await b.setAutomatic(true);
+      // A repeated baseline must not forget the intervening local edit.
+      await b.setAutomaticImages(true);
+      await a.sendText('remote after re-enable');
+      await eventually(() => b.item?.text == 'remote after re-enable');
+      expect(cb.text, 'copied while automatic was off');
+      expect(b.itemStatus, contains('sharing was inactive'));
+    },
+  );
+
+  test('paused local copy stays protected across repeated baselines', () async {
+    final cb = b.clipboard as FakeClipboard;
+    await b.setPaused(true);
+    cb.userCopy('copied while paused');
+    await b.setPaused(false);
+    await b.setAutomaticImages(true);
+    await a.sendText('after paused edit');
+    await eventually(() => b.item?.text == 'after paused edit');
+    expect(cb.text, 'copied while paused');
+    expect(cb.writes, 0);
+    await b.copyReceived();
+    await a.sendText('after explicit resolution');
+    await eventually(() => cb.text == 'after explicit resolution');
+  });
+
+  test(
+    'delayed baseline cannot commit after automatic sharing is disabled',
+    () async {
+      final cb = b.clipboard as FakeClipboard;
+      cb.readGate = Completer<void>();
+      final before = cb.readAttempts;
+      final enable = b.setAutomatic(true);
+      await eventually(() => cb.readAttempts > before);
+      await b.setAutomatic(false);
+      cb.userCopy('copy during delayed baseline');
+      cb.readGate!.complete();
+      await enable;
+      cb.readGate = null;
+      await b.setAutomatic(true);
+      await a.sendText('remote after delayed baseline');
+      await eventually(() => b.item?.text == 'remote after delayed baseline');
+      expect(cb.text, 'copy during delayed baseline');
+      expect(cb.writes, 0);
+    },
+  );
+
+  for (final classifyBeforeAck in [false, true]) {
+    test(
+      'stale ack preserves newer private copy (classified: $classifyBeforeAck)',
+      () async {
+        final original = a.host!;
+        final held = _HeldAckHost(original);
+        a.host = held;
+        addTearDown(() => a.host = original);
+        final ca = a.clipboard as FakeClipboard;
+        ca.userCopy('in-flight publication');
+        await eventually(() => held.ack != null);
+        if (!classifyBeforeAck) ca.readGate = Completer<void>();
+        final before = ca.readAttempts;
+        ca.userCopy('new private copy', private: true);
+        await eventually(() => ca.readAttempts > before);
+        if (classifyBeforeAck) {
+          await eventually(() => a.itemStatus == 'Local clipboard changed');
+        }
+        original.events.add(held.ack!);
+        await b.sendText('remote after stale ack');
+        await eventually(() => a.item?.text == 'remote after stale ack');
+        if (!classifyBeforeAck) {
+          ca.readGate!.complete();
+          ca.readGate = null;
+        }
+        expect(ca.text, 'new private copy');
+        expect(ca.writes, 0);
+        expect(a.itemStatus, isNot('Ready to paste'));
+      },
+    );
+  }
+
+  for (final hostReceives in [false, true]) {
+    test(
+      'old startup text accepts fresh copies (host: $hostReceives)',
+      () async {
+        await restartWithOldText(hostReceives: hostReceives);
+        final receiver = hostReceives ? a : b;
+        final sender = hostReceives ? b : a;
+        final clipboard = receiver.clipboard as FakeClipboard;
+        expect(clipboard.text, 'ordinary startup text');
+        expect(clipboard.writes, 0);
+        expect(a.host!.engine.sequence, hostReceives ? 0 : 1);
+        for (final text in ['first fresh copy', 'second fresh copy']) {
+          (sender.clipboard as FakeClipboard).userCopy(text);
+          await eventually(() => receiver.item?.text == text);
+          await eventually(() => clipboard.text == text);
+          await eventually(() => receiver.itemStatus == 'Ready to paste');
+        }
+        expect(clipboard.writes, 2);
+        expect(a.host!.engine.sequence, hostReceives ? 2 : 3);
+      },
+    );
+  }
+
+  test('matching ack releases only pending-publication protection', () async {
+    final original = a.host!;
+    final held = _HeldAckHost(original);
+    a.host = held;
+    addTearDown(() => a.host = original);
+    (a.clipboard as FakeClipboard).userCopy('my publication');
+    await eventually(() => held.ack != null);
+    await eventually(() => b.item?.text == 'my publication');
+    await b.sendText('overlapping remote item');
+    await eventually(() => a.item?.text == 'overlapping remote item');
+    expect((a.clipboard as FakeClipboard).text, 'my publication');
+    expect(a.itemStatus, 'Waiting for your local copy to finish sending.');
+    original.events.add(held.ack!);
+    await eventually(() => !a.hasConflict);
+    expect(a.itemStatus, 'Available in app. Waiting for the next shared copy.');
+    await b.sendText('fresh remote after ack');
+    await eventually(() => a.item?.text == 'fresh remote after ack');
+    await eventually(
+      () => (a.clipboard as FakeClipboard).text == 'fresh remote after ack',
+    );
+  });
+
+  test('rejected publication cannot be resolved by a late ack', () async {
+    final original = a.host!;
+    final held = _HeldAckHost(original);
+    a.host = held;
+    addTearDown(() => a.host = original);
+    final ca = a.clipboard as FakeClipboard;
+    ca.userCopy('conflicting local copy');
+    await eventually(() => held.ack != null);
+    original.events.add({
+      'type': 'error',
+      'code': 'conflict',
+      'message': 'Resolve simultaneous sends.',
+      'requestId': held.ack!['requestId'],
+    });
+    await eventually(() => a.hasConflict);
+    original.events.add(held.ack!);
+    await b.sendText('remote after rejected publication');
+    await eventually(() => a.item?.text == 'remote after rejected publication');
+    expect(ca.text, 'conflicting local copy');
+    expect(ca.writes, 0);
+    expect(a.hasConflict, true);
+  });
+
+  test('startup relaxation preserves a newer native revision', () async {
+    await restartWithOldText(hostReceives: false);
+    final cb = b.clipboard as FakeClipboard;
+    cb.beforeWrite = () =>
+        cb.userCopy('private copy during startup write', private: true);
+    await a.sendText('fresh text against startup baseline');
+    await eventually(() => cb.text == 'private copy during startup write');
+    expect(cb.writes, 0);
+    expect(b.itemStatus, isNot('Ready to paste'));
+  });
+
+  test(
+    'first successful baseline cannot erase an explicit typed-send conflict',
+    () async {
+      await restartWithOldText(hostReceives: true, unreadable: true);
+      final original = a.host!;
+      final held = _HeldAckHost(original);
+      a.host = held;
+      addTearDown(() => a.host = original);
+      await a.sendText('typed send with unreadable clipboard');
+      original.events.add({
+        'type': 'error',
+        'code': 'conflict',
+        'message': 'Resolve simultaneous sends.',
+        'requestId': held.ack!['requestId'],
+      });
+      await eventually(() => a.hasConflict);
+      final ca = a.clipboard as FakeClipboard;
+      ca.readFailure = null;
+      await a.setAutomaticImages(true);
+      await b.sendText('fresh remote after baseline recovery');
+      await eventually(
+        () => a.item?.text == 'fresh remote after baseline recovery',
+      );
+      expect(ca.text, 'ordinary startup text');
+      expect(ca.writes, 0);
+      expect(a.hasConflict, true);
+    },
+  );
 
   test(
     'files require consent, preserve nested bytes, and sync both directions',

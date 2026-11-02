@@ -52,6 +52,17 @@ class _ClipboardOperationCancelled extends SessionException {
     : super('Clipboard operation cancelled. Try Copy again.', 'cancelled');
 }
 
+enum _ClipboardProtection {
+  none,
+  startupText,
+  localCopy,
+  offlineCopy,
+  privateCopy,
+  publication,
+  conflict,
+  unknown,
+}
+
 class AppController extends ChangeNotifier {
   AppController({
     required this.identity,
@@ -104,7 +115,12 @@ class AppController extends ChangeNotifier {
   bool _disposed = false;
   bool _connecting = false;
   bool _awaitingSnapshot = true;
-  bool _resumeGuard = true;
+  _ClipboardProtection _protection = _ClipboardProtection.unknown;
+  int? _protectionRevision;
+  bool _baselineReading = false;
+  int _baselineGeneration = 0;
+  bool get _resumeGuard =>
+      _baselineReading || _protection != _ClipboardProtection.none;
   bool _localDirty = false;
   bool _clipboardReading = false;
   bool _clipboardReadAgain = false;
@@ -603,21 +619,72 @@ class AppController extends ChangeNotifier {
 
   Future<void> _baseline() async {
     _cancelClipboardCapture();
+    final baseline = ++_baselineGeneration;
+    final revision = _revision;
+    final connection = _connectionGeneration;
+    _baselineReading = false;
     if (!canAutomatic || !foreground) {
-      _resumeGuard = true;
+      _protect(_ClipboardProtection.unknown);
       return;
     }
+    _baselineReading = true;
+    bool valid() =>
+        !_disposed &&
+        baseline == _baselineGeneration &&
+        revision == _revision &&
+        connection == _connectionGeneration &&
+        foreground;
     try {
       final snapshot = await clipboard.read();
-      _resumeGuard =
-          _localDirty ||
-          (_observedRevision == null
-              ? snapshot.hasContent
-              : snapshot.revision != _observedRevision);
+      if (!valid()) return;
+      final previous = _observedRevision;
+      if (previous != null && snapshot.revision != previous) {
+        _localDirty = true;
+        _protect(
+          snapshot.sensitive
+              ? _ClipboardProtection.privateCopy
+              : _ClipboardProtection.offlineCopy,
+          revision: snapshot.revision,
+        );
+      } else if (!_localDirty &&
+          !hasConflict &&
+          _protection == _ClipboardProtection.unknown) {
+        // Only a first, successfully classified Windows text baseline can be
+        // replaced by a later live item. Never publish pre-existing content.
+        final ordinaryText =
+            Platform.isWindows &&
+            previous == null &&
+            snapshot.text?.isNotEmpty == true &&
+            !snapshot.sensitive &&
+            !snapshot.hasImage &&
+            !snapshot.hasFiles;
+        _protect(
+          snapshot.sensitive
+              ? _ClipboardProtection.privateCopy
+              : ordinaryText
+              ? _ClipboardProtection.startupText
+              : snapshot.hasContent
+              ? _ClipboardProtection.localCopy
+              : _ClipboardProtection.none,
+          revision: snapshot.revision,
+        );
+      }
       _observedRevision = snapshot.revision;
     } catch (_) {
-      _resumeGuard = true;
+      if (valid() &&
+          (_protection == _ClipboardProtection.none ||
+              _protection == _ClipboardProtection.startupText ||
+              _protection == _ClipboardProtection.unknown)) {
+        _protect(_ClipboardProtection.unknown);
+      }
+    } finally {
+      if (baseline == _baselineGeneration) _baselineReading = false;
     }
+  }
+
+  void _protect(_ClipboardProtection reason, {int? revision}) {
+    _protection = reason;
+    _protectionRevision = revision ?? _observedRevision;
   }
 
   void _message(Map<String, dynamic> message) {
@@ -716,6 +783,20 @@ class AppController extends ChangeNotifier {
               _receipt(current, stillLocal ? 'applied' : 'available');
             } else {
               _receipt(current, paused ? 'paused' : 'available');
+              if (!initial &&
+                  current.payload.isText &&
+                  _autoAccepts(current) &&
+                  !paused &&
+                  foreground &&
+                  !_baselineReading &&
+                  !_captureUnresolved &&
+                  !_localDirty &&
+                  _pending == null &&
+                  _candidate == null &&
+                  _protection == _ClipboardProtection.startupText &&
+                  _protectionRevision == _observedRevision) {
+                _protect(_ClipboardProtection.none);
+              }
               if (_autoAccepts(current) &&
                   !paused &&
                   foreground &&
@@ -727,7 +808,6 @@ class AppController extends ChangeNotifier {
               } else {
                 if (_localDirty || _pending != null || _candidate != null) {
                   conflictPayload ??= _candidate ?? _pending?.snapshot;
-                  _resumeGuard = true;
                 }
                 itemStatus = _manualCopyReason(current);
                 _receipt(current, paused ? 'paused' : 'needsAction');
@@ -752,9 +832,17 @@ class AppController extends ChangeNotifier {
             _retry?.cancel();
             _sequence = max(_sequence, message['seq'] as int);
             if (_candidate == null &&
-                publication.revision == _observedRevision) {
+                !_captureUnresolved &&
+                publication.revision == _observedRevision &&
+                _protection == _ClipboardProtection.publication &&
+                _protectionRevision == publication.revision) {
               _localDirty = false;
+              _protect(_ClipboardProtection.none);
               conflictText = null;
+              if (item != null && item!.senderId != identity.id) {
+                itemStatus =
+                    'Available in app. Waiting for the next shared copy.';
+              }
             }
             if (publication.automatic) {
               _localPublicationItemId = message['itemId'] as String;
@@ -804,7 +892,7 @@ class AppController extends ChangeNotifier {
               _pending != null) {
             if (code == 'conflict') {
               conflictPayload = _candidate ?? _pending!.snapshot;
-              _resumeGuard = true;
+              _protect(_ClipboardProtection.conflict);
             }
             _cancelPublication(text);
           }
@@ -834,7 +922,6 @@ class AppController extends ChangeNotifier {
     automatic = value && canAutomatic;
     await preferences.setBool('automatic', automatic);
     if (automatic) {
-      _localDirty = false;
       await _baseline();
     } else {
       _cancelPublication(null);
@@ -919,6 +1006,15 @@ class AppController extends ChangeNotifier {
 
   String _manualCopyReason(ClipItem current) {
     if (paused) return 'Sharing paused';
+    if (_baselineReading || _protection == _ClipboardProtection.unknown) {
+      return 'Clipboard could not be checked. Copy to try again.';
+    }
+    if (_protection == _ClipboardProtection.publication && _pending != null) {
+      return 'Waiting for your local copy to finish sending.';
+    }
+    if (_protection == _ClipboardProtection.offlineCopy) {
+      return 'Local copy made while sharing was inactive. Copy to replace it.';
+    }
     if (_localDirty || _resumeGuard || _pending != null || _candidate != null) {
       return 'Your local copy is protected. Copy to replace it.';
     }
@@ -1012,7 +1108,14 @@ class AppController extends ChangeNotifier {
       _revision++;
       _cancelImageReceive();
       _localDirty = true;
-      _resumeGuard = false;
+      _protect(
+        snapshot.sensitive
+            ? _ClipboardProtection.privateCopy
+            : !connected || _awaitingSnapshot
+            ? _ClipboardProtection.offlineCopy
+            : _ClipboardProtection.localCopy,
+        revision: snapshot.revision,
+      );
       if (item != null) {
         itemStatus = 'Local clipboard changed';
         _receipt(item!, 'needsAction');
@@ -1160,6 +1263,11 @@ class AppController extends ChangeNotifier {
       files,
     );
     _pending = publication;
+    if (nativeRevision != null &&
+        nativeRevision == _observedRevision &&
+        !_captureUnresolved) {
+      _protect(_ClipboardProtection.publication, revision: nativeRevision);
+    }
     _notify();
     _retry?.cancel();
     _retry = Timer.periodic(
@@ -1174,6 +1282,7 @@ class AppController extends ChangeNotifier {
     if (publication == null) return;
     if (publication.age.elapsed > const Duration(seconds: 10)) {
       conflictPayload ??= publication.snapshot;
+      _protect(_ClipboardProtection.conflict);
       _cancelPublication(
         'Delivery is unconfirmed. You can deliberately send again.',
       );
@@ -1198,6 +1307,7 @@ class AppController extends ChangeNotifier {
     } on SessionException catch (failure) {
       if ({'conflict', 'rate', 'request'}.contains(failure.code)) {
         conflictPayload = publication.snapshot;
+        _protect(_ClipboardProtection.conflict);
         _cancelPublication(failure.message);
         if (host != null) _message(host!.engine.snapshot());
       }
@@ -1803,7 +1913,7 @@ class AppController extends ChangeNotifier {
               valid,
             );
             if (!success) {
-              _resumeGuard = true;
+              _protect(_ClipboardProtection.localCopy);
               unawaited(_clipboardChanged());
               itemStatus = 'Your local copy is protected. Copy to replace it.';
               _receipt(current, 'needsAction');
@@ -1956,7 +2066,7 @@ class AppController extends ChangeNotifier {
     }
     _clipboardNeedsReconcile = false;
     _localDirty = false;
-    _resumeGuard = false;
+    _protect(_ClipboardProtection.none);
     conflictText = null;
     itemStatus = 'Ready to paste';
     _receipt(current, 'applied');
@@ -1968,7 +2078,7 @@ class AppController extends ChangeNotifier {
     _revision++;
     _cancelImageReceive();
     _cancelPublication(null);
-    _resumeGuard = true;
+    _protect(_ClipboardProtection.privateCopy);
     _localDirty = true;
     if (!await clipboard.write(text)) {
       throw SessionException('Could not copy the invitation. Try again.');
@@ -1988,8 +2098,7 @@ class AppController extends ChangeNotifier {
     if (content == null) return;
     _cancelPublication(null);
     conflictText = null;
-    _resumeGuard = false;
-    await _sendSnapshot(content);
+    await _sendSnapshot(content, nativeRevision: content.revision);
   }
 
   Future<void> setKeepAwake(bool value) async {
@@ -2007,7 +2116,7 @@ class AppController extends ChangeNotifier {
       _expire?.cancel();
       _cancelPublication(null);
       _reconnect?.cancel();
-      _resumeGuard = true;
+      _protect(_ClipboardProtection.localCopy);
       pendingPair?.decide(false);
       invitation = null;
       _client?.stop();
