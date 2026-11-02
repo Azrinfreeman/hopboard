@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -17,6 +18,10 @@ void main() {
       final cache = await clipboard.receiveCache();
       expect(await clipboard.availableFileSpace(cache.path), greaterThan(0));
       final directory = await cache.createTemp('native-test-');
+      final changed = Completer<void>();
+      final listener = clipboard.changes.stream.listen((_) {
+        if (!changed.isCompleted) changed.complete();
+      });
       try {
         final file = await File('${directory.path}/report.zip')
             .writeAsBytes([1, 2, 3]);
@@ -36,12 +41,14 @@ void main() {
           true,
         );
         final received = await clipboard.readContent();
+        await changed.future.timeout(const Duration(seconds: 5));
         expect(received.hasFiles, true);
         expect(received.ownWrite, true);
         expect(received.cut, false);
         expect(received.filePaths, [directory.path]);
         expect(await file.readAsBytes(), [1, 2, 3]);
       } finally {
+        await listener.cancel();
         if (before.hasFiles && before.filePaths.isNotEmpty) {
           await clipboard.writeFiles(before.filePaths);
         } else if (before.png != null) {

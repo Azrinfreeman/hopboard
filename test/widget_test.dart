@@ -402,7 +402,8 @@ void main() {
           'fileCount': 1,
         }),
       );
-      app.itemStatus = 'Download to copy files';
+      app.itemStatus =
+          'Above your automatic download limit. Download to use files.';
       tester.view.devicePixelRatio = 1;
       addTearDown(() {
         app.dispose();
@@ -419,6 +420,9 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('Clipboard').last);
       for (final width in [1440.0, 320.0]) {
+        app.itemStatus =
+            'Above your automatic download limit. Download to use files.';
+        app.notifyListeners();
         tester.view.physicalSize = Size(width, 900);
         tester.platformDispatcher.textScaleFactorTestValue = width == 320
             ? 2
@@ -427,6 +431,12 @@ void main() {
         await tester.ensureVisible(find.text('Download').last);
         expect(find.text('Reports'), findsOneWidget);
         expect(find.text('Download'), findsOneWidget);
+        expect(
+          find.text(
+            'Above your automatic download limit. Download to use files.',
+          ),
+          findsOneWidget,
+        );
         expect(tester.takeException(), isNull);
         if (width == 1440) await _captureDashboard(tester, 'windows-files');
         app.imageProgress = 45;

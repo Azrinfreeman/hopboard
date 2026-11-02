@@ -5,7 +5,7 @@ import 'dart:math';
 import 'content.dart';
 
 const protocolVersion = 1;
-const applicationVersion = '0.2.0-dev';
+const applicationVersion = '0.2.0';
 const maxTextBytes = 64 * 1024;
 const maxFrameBytes = 512 * 1024;
 const itemLifetime = Duration(minutes: 5);

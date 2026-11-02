@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/services.dart';
 import 'package:local_clipboard/app/controller.dart';
 import 'package:local_clipboard/core/host.dart';
 import 'package:local_clipboard/core/identity.dart';
@@ -175,6 +176,7 @@ void main() {
       expect(b.imageProgress, null);
       expect(cb.writes, 0);
       expect(cb.fileCache, null);
+      expect(b.itemStatus, contains('Above your automatic download limit'));
       await b.setFileLimits(itemBytes: 16 * 1024 * 1024);
       await expectLater(b.copyReceived(), throwsA(isA<SessionException>()));
       expect(cb.writes, 0);
@@ -296,6 +298,18 @@ void main() {
     expect(cb.png, png);
     expect(cb.text, 'manual');
     expect(b.itemStatus, 'Ready to paste');
+  });
+
+  test('incoming image explains that automatic image sharing is off', () async {
+    final ca = a.clipboard as FakeClipboard;
+    ca.userCopyImage(png);
+    await a.pasteAndSend();
+    await eventually(() => b.item?.kind == 'image');
+    expect(
+      b.itemStatus,
+      'Automatic image sharing is off. Copy to use this image.',
+    );
+    expect((b.clipboard as FakeClipboard).writes, 0);
   });
 
   test('sensitive images and newer local copies are preserved', () async {
@@ -453,6 +467,257 @@ void main() {
       expect(b.trust.hosts[a.identity.id]!.port, realPort);
     },
   );
+
+  test('one copy recovers after clipboard capture is busy for 600ms', () async {
+    final ca = a.clipboard as FakeClipboard;
+    final cb = b.clipboard as FakeClipboard;
+    ca.readBusyUntil = DateTime.now().add(const Duration(milliseconds: 600));
+    ca.userCopy('recover capture');
+    await eventually(() => cb.text == 'recover capture');
+    expect(a.host!.engine.sequence, 1);
+    expect(cb.writes, 1);
+  });
+
+  for (final kind in ['text', 'image', 'files']) {
+    test(
+      '$kind confirmation retries reads without repeating a successful write',
+      () async {
+        final ca = a.clipboard as FakeClipboard;
+        final cb = b.clipboard as FakeClipboard;
+        if (kind == 'image') {
+          await a.setAutomaticImages(true);
+          await b.setAutomaticImages(true);
+        }
+        if (kind == 'files') {
+          ca.filesEnabled = cb.filesEnabled = true;
+          await a.setAutomaticFiles(true);
+          await b.setAutomaticFiles(true);
+        }
+        cb.busyAfterWrite = const Duration(milliseconds: 600);
+        if (kind == 'image') {
+          ca.userCopyImage(png);
+        } else if (kind == 'files') {
+          final directory = await Directory.systemTemp.createTemp(
+            'clipboard-retry-',
+          );
+          addTearDown(() => directory.delete(recursive: true));
+          final file = await File('${directory.path}/video.mp4')
+              .writeAsBytes([1, 2, 3]);
+          ca.userCopyFiles([file.path]);
+        } else {
+          ca.userCopy('confirm once');
+        }
+        await eventually(() => b.itemStatus == 'Ready to paste');
+        expect(cb.writes, 1);
+        expect(cb.writeAttempts, 1);
+        expect(a.host!.engine.sequence, 1);
+        ca.userCopy('next automatic copy');
+        await eventually(() => cb.text == 'next automatic copy');
+        await eventually(() => b.itemStatus == 'Ready to paste');
+        expect(cb.writes, 2);
+        expect(a.host!.engine.sequence, 2);
+      },
+    );
+  }
+
+  test(
+    'a pending candidate waits for classification of a newer private copy',
+    () async {
+      final ca = a.clipboard as FakeClipboard;
+      final attempts = ca.readAttempts;
+      ca.userCopy('old candidate');
+      await eventually(() => ca.readAttempts > attempts);
+      // Keep the next read blocked past the candidate's coalescing timer.
+      ca.readGate = Completer<void>();
+      ca.userCopy('new private copy', private: true);
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      expect(a.host!.engine.sequence, 0);
+      ca.readGate!.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      expect(a.host!.engine.sequence, 0);
+      ca.readGate = null;
+    },
+  );
+
+  test(
+    'duplicate notifications do not discard an eligible candidate',
+    () async {
+      final ca = a.clipboard as FakeClipboard;
+      final attempts = ca.readAttempts;
+      ca.userCopy('one revision');
+      await eventually(() => ca.readAttempts > attempts);
+      ca.changes.add(null);
+      await eventually(
+        () => (b.clipboard as FakeClipboard).text == 'one revision',
+      );
+      expect(a.host!.engine.sequence, 1);
+    },
+  );
+
+  test('capture recovery uses the newest eligible copy', () async {
+    final ca = a.clipboard as FakeClipboard;
+    final cb = b.clipboard as FakeClipboard;
+    ca.readBusyUntil = DateTime.now().add(const Duration(milliseconds: 600));
+    ca.userCopy('superseded');
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+    ca.userCopy('latest copy');
+    await eventually(() => cb.text == 'latest copy');
+    expect(a.host!.engine.sequence, 1);
+  });
+
+  test('capture recovery never sends a newer private copy', () async {
+    final ca = a.clipboard as FakeClipboard;
+    ca.readBusyUntil = DateTime.now().add(const Duration(milliseconds: 600));
+    ca.userCopy('superseded');
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+    ca.userCopy('secret', private: true);
+    await Future<void>.delayed(const Duration(milliseconds: 900));
+    expect(a.host!.engine.sequence, 0);
+    ca.userCopy('public');
+    await eventually(() => (b.clipboard as FakeClipboard).text == 'public');
+  });
+
+  test(
+    'pausing cancels a pending capture even after sharing resumes',
+    () async {
+      final ca = a.clipboard as FakeClipboard;
+      ca.readBusyUntil = DateTime.now().add(const Duration(milliseconds: 600));
+      ca.userCopy('before pause');
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      await a.setPaused(true);
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+      await a.setPaused(false);
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      expect(a.host!.engine.sequence, 0);
+      ca.userCopy('after resume');
+      await eventually(
+        () => (b.clipboard as FakeClipboard).text == 'after resume',
+      );
+    },
+  );
+
+  test('permanent capture errors are reported without retrying', () async {
+    final ca = a.clipboard as FakeClipboard;
+    final attempts = ca.readAttempts;
+    ca.readFailure = PlatformException(
+      code: 'image',
+      message: 'Unsupported image',
+    );
+    ca.userCopy('invalid image');
+    await eventually(() => a.error != null);
+    await Future<void>.delayed(const Duration(milliseconds: 350));
+    expect(ca.readAttempts, attempts + 1);
+    expect(a.host!.engine.sequence, 0);
+    ca.readFailure = null;
+    ca.userCopy('valid copy');
+    await eventually(() => (b.clipboard as FakeClipboard).text == 'valid copy');
+  });
+
+  test(
+    'capture retries stop after the deadline and a fresh copy recovers',
+    () async {
+      final ca = a.clipboard as FakeClipboard;
+      ca.readBusyUntil = DateTime.now().add(const Duration(seconds: 10));
+      ca.userCopy('blocked');
+      await Future<void>.delayed(const Duration(milliseconds: 5400));
+      expect(a.error, contains('Clipboard stayed busy'));
+      final attempts = ca.readAttempts;
+      await Future<void>.delayed(const Duration(milliseconds: 650));
+      expect(ca.readAttempts, attempts);
+      ca.readBusyUntil = null;
+      ca.userCopy('retry succeeds');
+      await eventually(
+        () => (b.clipboard as FakeClipboard).text == 'retry succeeds',
+      );
+      expect(a.error, isNull);
+    },
+  );
+
+  test(
+    'failed confirmation reconciles before the next automatic write',
+    () async {
+      final ca = a.clipboard as FakeClipboard;
+      final cb = b.clipboard as FakeClipboard;
+      cb.busyAfterWrite = const Duration(seconds: 10);
+      ca.userCopy('unconfirmed');
+      await eventually(() => cb.writes == 1);
+      await Future<void>.delayed(const Duration(milliseconds: 5400));
+      expect(b.itemStatus, contains('Clipboard confirmation failed'));
+      cb.readBusyUntil = null;
+      ca.userCopy('next confirmed');
+      await eventually(() => b.itemStatus == 'Ready to paste');
+      expect(cb.text, 'next confirmed');
+      expect(cb.writeAttempts, 2);
+    },
+  );
+
+  test(
+    'a newer incoming item cancels confirmation of the previous item',
+    () async {
+      final ca = a.clipboard as FakeClipboard;
+      final cb = b.clipboard as FakeClipboard;
+      cb.busyAfterWrite = const Duration(milliseconds: 600);
+      ca.userCopy('previous item');
+      await eventually(() => cb.writes == 1);
+      ca.userCopy('new current item');
+      await eventually(() => cb.text == 'new current item');
+      await eventually(() => b.itemStatus == 'Ready to paste');
+      expect(cb.writeAttempts, 2);
+    },
+  );
+
+  test('manual Copy retries confirmation without writing twice', () async {
+    await b.setAutomatic(false);
+    final cb = b.clipboard as FakeClipboard;
+    await a.sendText('manual confirmation');
+    await eventually(() => b.item != null);
+    cb.busyAfterWrite = const Duration(milliseconds: 600);
+    await b.copyReceived();
+    expect(b.itemStatus, 'Ready to paste');
+    expect(cb.writeAttempts, 1);
+  });
+
+  test('local copy during confirmation remains protected', () async {
+    final ca = a.clipboard as FakeClipboard;
+    final cb = b.clipboard as FakeClipboard;
+    cb.busyAfterWrite = const Duration(milliseconds: 600);
+    ca.userCopy('incoming');
+    await eventually(() => cb.writes == 1);
+    cb.userCopy('new local secret', private: true);
+    await Future<void>.delayed(const Duration(milliseconds: 1000));
+    expect(cb.text, 'new local secret');
+    expect(b.itemStatus, isNot('Ready to paste'));
+    ca.userCopy('another incoming');
+    await eventually(() => b.item?.text == 'another incoming');
+    expect(cb.text, 'new local secret');
+    expect(b.itemStatus, contains('local copy is protected'));
+    await b.copyReceived();
+    ca.userCopy('resolved');
+    await eventually(() => cb.text == 'resolved');
+  });
+
+  test('a published local copy resolves an interrupted confirmation', () async {
+    final ca = a.clipboard as FakeClipboard;
+    final cb = b.clipboard as FakeClipboard;
+    cb.busyAfterWrite = const Duration(milliseconds: 600);
+    ca.userCopy('incoming before local copy');
+    await eventually(() => cb.writes == 1);
+    cb.userCopy('ordinary local copy');
+    await eventually(() => ca.text == 'ordinary local copy');
+    ca.userCopy('incoming after local publication');
+    await eventually(() => cb.text == 'incoming after local publication');
+    await eventually(() => b.itemStatus == 'Ready to paste');
+  });
+
+  test('incoming clipboard writes retry transient busy failures', () async {
+    final cb = b.clipboard as FakeClipboard;
+    cb.busyWrites = 5;
+    (a.clipboard as FakeClipboard).userCopy('busy write');
+    await eventually(() => b.itemStatus == 'Ready to paste');
+    expect(cb.text, 'busy write');
+    expect(cb.writeAttempts, 6);
+    expect(cb.writes, 1);
+  });
 
   test('rapid copies coalesce to latest current clipboard', () async {
     final ca = a.clipboard as FakeClipboard;

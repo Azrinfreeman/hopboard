@@ -2,6 +2,8 @@
 
 Records observed results; sections are dated. The first section was checked on 12 October 2026 against version 0.1.1. This records observed results separately from the physical-device checks that remain open.
 
+Paths under `artifacts/`, `build/`, and uncommitted packages in `dist/` refer to generated local outputs. They are removed during cleanup and can be recreated with the commands below.
+
 ## Verified
 
 | Check | Result |
@@ -92,3 +94,21 @@ The 0.2.0 development implementation builds for Windows and includes image/mixed
 - Built the Windows x64 release, version `0.2.0-dev+4`, and compiled `dist/Hopboard-Setup-0.2.0-dev-x64.exe` with Inno Setup. Installer tooling now accepts prerelease version labels.
 - Verified required installer-stage files, all three x64 Visual C++ runtime DLLs and executable equality with the release build. Verified required contents of the portable ZIP and both generated SHA-256 checksums.
 - Packages are unsigned local test builds. The installer was not installed or published; upgrade installation and two-PC paste remain for manual testing.
+
+### Clipboard reliability (3 November 2026)
+
+- Reproduced two failures against the original controller using the new tests: one copy with capture busy for 600 ms never arrived, and a successful write followed by busy confirmation reads never reached the confirmed state. Both regressions pass with the fix.
+- Added 19 controller regressions/eligibility checks. Coverage includes text/image/file confirmation without repeated writes, capture recovery without another event, permanent-error classification, bounded retry exhaustion, latest/private-copy handling, duplicate events, pause cancellation, supersession, recovery after unconfirmed writes, manual Copy confirmation, and subsequent bidirectional sharing.
+- `flutter test --no-pub --exclude-tags large --reporter expanded`: **104 tests passed** on the final code. File status/action presentation also passes the existing desktop and 320-pixel, 2× text-scale widget test.
+- An earlier `flutter test --no-pub --reporter expanded` run passed **99 tests**, including the unchanged **1 GiB relay** (3 minutes 25 seconds). Subsequent capture/confirmation refinements and additional regressions were checked by the final 104-test run; the large transfer was not repeated after those controller-only refinements.
+- Final `flutter analyze --no-pub`: **no issues**. Final `flutter build windows --debug --no-pub`: **passed**, producing `build/windows/x64/runner/Debug/local_clipboard.exe`. Commands used the existing Flutter 3.47.6 SDK at `D:/flutter-3.47.6/flutter/bin`; dependencies were resolved with `flutter pub get --offline`, without changing the lockfile.
+- Extended `integration_test/windows_files_test.dart` to assert clipboard listener delivery alongside its existing native file/revision checks. **Not run this session:** native tests and external-process clipboard contention. An installed Hopboard process was running at `C:/LocalClipboard/local_clipboard.exe`; it was left open, and the real user clipboard was not read or replaced.
+- **Still required:** two-PC Explorer/Office/image/video paste with matching builds, real contention during capture/write/confirmation, physical disconnect and sleep recovery, and the manual acceptance checks in [IMPLEMENTATION.md](IMPLEMENTATION.md). No installer, release, or running installation was updated.
+
+### Version 0.2.0 installer (3 November 2026)
+
+- The user reported that the rebuilt development installer works. This is user feedback, not an independently observed two-PC test.
+- Updated the package version to `0.2.0+5` and the application version advertised to peers to `0.2.0`.
+- `flutter test --no-pub --exclude-tags large --reporter expanded`: **104 tests passed**. `flutter analyze --no-pub`: **no issues**. `flutter build windows --release --no-pub`: **passed**.
+- Built `dist/Hopboard-Setup-0.2.0-x64.exe` with Inno Setup 6.7.3. Verified application version `0.2.0+5`, installer version `0.2.0.5`, the generated SHA-256 checksum, staged release-file equality, and inclusion of all three x64 Visual C++ runtime DLLs.
+- This installer is unsigned and has not been installed or published during this build. The remaining physical-device checks above still apply.

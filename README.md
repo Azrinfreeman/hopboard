@@ -29,15 +29,15 @@ Hopboard moves text between your own devices over your local network. It needs n
 - **Clipboard privacy:** copies that password managers mark as private are never sent automatically.
 - **Tested:** automated tests cover real TLS connections and attack cases such as spoofed hosts, guessed codes and connection floods.
 
-Built with Flutter and Dart for Windows and Android (iPhone source included, not yet built). Current source is 0.2.0-dev; the published 0.1.2 development build predates image/file sharing. Physical-device testing, listed in [VALIDATION.md](VALIDATION.md), is required before a public release. This code has not had an independent security audit. The Windows installer is unsigned, so Windows SmartScreen will warn when you run it.
+Built with Flutter and Dart for Windows and Android (iPhone source included, not yet built). Current source is 0.2.0+5. Remaining physical-device checks are listed in [VALIDATION.md](VALIDATION.md). This code has not had an independent security audit. The Windows installer is unsigned, so Windows SmartScreen will warn when you run it.
 
 ## Download
 
-Get the Windows installer from the [releases page](https://github.com/Azrinfreeman/hopboard/releases). **0.2.0-dev** is a pre-release with image, file and folder sharing for Windows; **0.1.2** is the earlier text-only build. Both are unsigned development builds, so Windows SmartScreen will warn; check the download against the attached `.sha256` file. An Android APK is not on a release yet.
+Get the Windows installer from the [0.2.0 release](https://github.com/Azrinfreeman/hopboard/releases/tag/v0.2.0). It includes image, file and folder sharing and automatic clipboard recovery. The installer is unsigned, so Windows SmartScreen will warn; check the download against the attached `.sha256` file. An Android APK is not on a release yet.
 
-## In development: Windows images, files and folders
+## Windows images, files and folders
 
-The 0.2.0 source supports clipboard images, mixed text/image copies, Explorer files and folders, file/folder pickers, drag onto the window, and explicit ZIP packaging. Automatic image and file sharing each require separate consent. Use **Copy**, rather than Cut, for Explorer transfers. Windows clipboard integration passes local automated checks; two-PC Explorer/Office paste remains unverified. The 0.2.0-dev installer is published as a pre-release.
+Version 0.2.0 supports clipboard images, mixed text/image copies, Explorer files and folders, file/folder pickers, drag onto the window, and explicit ZIP packaging. Automatic image and file sharing each require separate consent. Use **Copy**, rather than Cut, for Explorer transfers. Windows clipboard integration passes local automated checks; two-PC Explorer/Office paste remains unverified.
 
 Files up to 256 MiB download automatically when file consent and automatic sharing are enabled; larger items wait for **Download**. The item limit defaults to 4 GiB and can be reduced. Files are verified before **Ready to paste** appears. Phone image/file workflows remain pending.
 
@@ -74,7 +74,7 @@ PC-to-PC pairing needs no camera or JSON. **Copy code** copies only the six digi
 
 ### Android
 
-Use `dist/LocalClipboard-Android-arm64.apk` (built before the rename, so it still shows the previous name; rebuild with `tools/build_android.ps1` for a Hopboard build) on a modern ARM64 phone. Other architecture builds are in `build/app/outputs/flutter-apk/`. Allow installation from the application used to open the APK. Grant local-network access when joining or hosting; camera access is needed only to scan.
+Run `tools/build_android.ps1` to create `dist/Hopboard-Android-arm64.apk` for a modern ARM64 phone. Other architecture builds are in `build/app/outputs/flutter-apk/`. Allow installation from the application used to open the APK. Grant local-network access when joining or hosting; camera access is needed only to scan.
 
 This optimized development APK uses the Android debug signing key. Configure a private release key before distribution or publishing.
 
@@ -93,6 +93,8 @@ iOS source is included. An iPhone build requires a Mac, Xcode, a signing team, a
 Phones cannot provide unrestricted background clipboard sharing. Moving a phone host to the background stops its session. A joined phone reconnects when reopened. **Keep screen awake** is available during phone hosting.
 
 The app preserves text copied while disconnected or outside the phone app. If it cannot safely replace the clipboard, choose **Use received text** or **Send my text**. Simultaneous sends are resolved explicitly. “Available in app” and “Ready to paste” are separate states.
+
+Automatic capture and clipboard replacement retry temporary clipboard contention for up to five seconds. A successful write is confirmed separately, so a busy confirmation read does not repeat the write or create a false local-copy conflict. Hopboard explains when a local copy is protected, automatic image/file sharing is off, or a file exceeds the automatic download limit. Explorer-copied videos follow the same file limits; larger videos still require **Download**. Install version 0.2.0 to get these recovery changes.
 
 Text is limited to 64 KiB in UTF-8 and expires after five minutes. File items expire after fifteen minutes. Expiry and host **Clear** remove shared app state; they do not erase an OS clipboard, pasted copies, or another app's clipboard history. Automatic mode shares with every trusted member: pause before copying private content. Copies that their app marks private, such as passwords from a password manager, are never sent automatically; use **Paste & Send** to share one deliberately. On Windows, items the app places on the clipboard are excluded from Win+V history and Cloud Clipboard. Mobile images/files, history, and cloud sync remain pending.
 

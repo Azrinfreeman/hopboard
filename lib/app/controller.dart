@@ -4,6 +4,7 @@ import 'dart:math';
 import 'dart:typed_data' show BytesBuilder;
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/client.dart';
@@ -44,6 +45,11 @@ class _Publication {
   final ClipboardSnapshot snapshot;
   final FileContent? files;
   final age = Stopwatch()..start();
+}
+
+class _ClipboardOperationCancelled extends SessionException {
+  _ClipboardOperationCancelled()
+    : super('Clipboard operation cancelled. Try Copy again.', 'cancelled');
 }
 
 class AppController extends ChangeNotifier {
@@ -102,6 +108,11 @@ class AppController extends ChangeNotifier {
   bool _localDirty = false;
   bool _clipboardReading = false;
   bool _clipboardReadAgain = false;
+  bool _captureUnresolved = false;
+  int _captureGeneration = 0;
+  bool _clipboardNeedsReconcile = false;
+  static const _captureBusyMessage =
+      'Clipboard stayed busy. Copy again or use Paste & Send.';
   bool _rebindBusy = false;
   int _revision = 0;
   int? _observedRevision;
@@ -591,6 +602,7 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> _baseline() async {
+    _cancelClipboardCapture();
     if (!canAutomatic || !foreground) {
       _resumeGuard = true;
       return;
@@ -717,13 +729,7 @@ class AppController extends ChangeNotifier {
                   conflictPayload ??= _candidate ?? _pending?.snapshot;
                   _resumeGuard = true;
                 }
-                itemStatus = paused
-                    ? 'Sharing paused'
-                    : current.payload.isText
-                    ? 'Tap Copy to use received text'
-                    : current.kind == 'files'
-                    ? 'Download to copy files'
-                    : 'Tap Copy to use received image';
+                itemStatus = _manualCopyReason(current);
                 _receipt(current, paused ? 'paused' : 'needsAction');
                 if (current.kind == 'files' && !paused) {
                   unawaited(
@@ -823,6 +829,7 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> setAutomatic(bool value) async {
+    _cancelClipboardCapture();
     _revision++;
     automatic = value && canAutomatic;
     await preferences.setBool('automatic', automatic);
@@ -910,31 +917,98 @@ class AppController extends ChangeNotifier {
     _notify();
   }
 
+  String _manualCopyReason(ClipItem current) {
+    if (paused) return 'Sharing paused';
+    if (_localDirty || _resumeGuard || _pending != null || _candidate != null) {
+      return 'Your local copy is protected. Copy to replace it.';
+    }
+    if (!automatic) return 'Automatic sharing is off. Copy to use this item.';
+    if (current.kind == 'files') {
+      if (!clipboard.supportsFiles) {
+        return 'File clipboard is unavailable on this device.';
+      }
+      if (!automaticFiles) {
+        return 'Automatic file sharing is off. Download to use files.';
+      }
+      if (current.payload.totalBytes > fileLimit) {
+        return 'Files exceed your item size limit.';
+      }
+      return 'Above your automatic download limit. Download to use files.';
+    }
+    if (current.payload.image != null && !automaticImages) {
+      return 'Automatic image sharing is off. Copy to use this image.';
+    }
+    return 'Copy to use this item.';
+  }
+
+  void _cancelClipboardCapture() {
+    _captureGeneration++;
+    _clipboardReadAgain = false;
+    _captureUnresolved = false;
+    _candidate = null;
+    _coalesce?.cancel();
+  }
+
+  // Only contention is retryable. Each operation owns one bounded retry loop;
+  // validity is checked after every await, including a successful native call.
+  Future<T> _retryClipboard<T>(
+    Future<T> Function() operation,
+    bool Function() valid,
+  ) async {
+    final clock = Stopwatch()..start();
+    const delays = [30, 60, 90, 200, 400, 500];
+    var attempt = 0;
+    while (true) {
+      if (!valid()) throw _ClipboardOperationCancelled();
+      try {
+        final result = await operation();
+        if (!valid()) throw _ClipboardOperationCancelled();
+        return result;
+      } on PlatformException catch (failure) {
+        if (failure.code != 'busy' || clock.elapsedMilliseconds >= 5000) {
+          rethrow;
+        }
+        final delay = min(
+          delays[min(attempt++, delays.length - 1)],
+          5000 - clock.elapsedMilliseconds,
+        );
+        await Future<void>.delayed(Duration(milliseconds: max(0, delay)));
+      }
+    }
+  }
+
   Future<void> _clipboardChanged() async {
-    if (!automatic || paused || !foreground) return;
+    if (_disposed || !automatic || paused || !foreground) return;
+    _captureUnresolved = true;
+    final capture = ++_captureGeneration;
     if (_clipboardReading) {
       _clipboardReadAgain = true;
       return;
     }
     _clipboardReading = true;
+    final connection = _connectionGeneration;
+    bool valid() =>
+        !_disposed &&
+        capture == _captureGeneration &&
+        connection == _connectionGeneration &&
+        automatic &&
+        !paused &&
+        foreground;
     try {
-      ClipboardSnapshot? snapshot;
-      for (var attempt = 0; attempt < 4; attempt++) {
-        try {
-          snapshot = automaticImages || automaticFiles
-              ? await clipboard.readContent(includeImages: automaticImages)
-              : await clipboard.read();
-          break;
-        } catch (_) {
-          await Future<void>.delayed(
-            Duration(milliseconds: 30 * (attempt + 1)),
-          );
-        }
-      }
-      if (snapshot == null || !automatic || paused || !foreground) return;
+      final snapshot = await _retryClipboard(
+        () async => automaticImages || automaticFiles
+            ? await clipboard.readContent(includeImages: automaticImages)
+            : await clipboard.read(),
+        valid,
+      );
+      _captureUnresolved = false;
+      if (error == _captureBusyMessage) error = null;
       if (snapshot.revision == _observedRevision) return;
       _observedRevision = snapshot.revision;
+      _clipboardNeedsReconcile = false;
       if (snapshot.ownWrite) return;
+      _candidate = null;
+      _coalesce?.cancel();
       _revision++;
       _cancelImageReceive();
       _localDirty = true;
@@ -959,26 +1033,44 @@ class AppController extends ChangeNotifier {
       }
       if (!snapshot.hasFiles && text?.isNotEmpty == true) validText(text);
       _candidate = snapshot;
-      _coalesce?.cancel();
-      _coalesce = Timer(
-        const Duration(milliseconds: 100),
-        () => unawaited(_drainCandidate()),
-      );
+    } on _ClipboardOperationCancelled {
+      // A newer event or lifecycle change owns the next capture.
+    } on PlatformException catch (failure) {
+      if (valid()) {
+        error = failure.code == 'busy'
+            ? _captureBusyMessage
+            : 'This clipboard content could not be read. Use a supported item.';
+      }
     } on FormatException {
-      error =
-          'This clipboard item cannot be shared. Use plain text up to 64 KiB.';
+      if (valid()) {
+        error =
+            'This clipboard item cannot be shared. Check its format and size.';
+      }
+    } catch (_) {
+      if (valid()) {
+        error =
+            'This clipboard content could not be read. Use a supported item.';
+      }
     } finally {
       _clipboardReading = false;
       if (_clipboardReadAgain) {
         _clipboardReadAgain = false;
         unawaited(_clipboardChanged());
+      } else if (!_captureUnresolved && _candidate != null) {
+        _coalesce?.cancel();
+        _coalesce = Timer(
+          const Duration(milliseconds: 100),
+          () => unawaited(_drainCandidate()),
+        );
       }
       _notify();
     }
   }
 
   Future<void> _drainCandidate() async {
-    if (_pending != null ||
+    if (_captureUnresolved ||
+        _clipboardReading ||
+        _pending != null ||
         _candidate == null ||
         !sharing ||
         !automatic ||
@@ -1116,6 +1208,7 @@ class AppController extends ChangeNotifier {
   }
 
   void _cancelPublication(String? reason) {
+    _cancelClipboardCapture();
     _pending = null;
     _candidate = null;
     _retry?.cancel();
@@ -1558,21 +1651,29 @@ class AppController extends ChangeNotifier {
     return future;
   }
 
-  Future<bool> _writeItem(ClipItem current, int? expectedRevision) async {
+  Future<bool> _writeItem(
+    ClipItem current,
+    int? expectedRevision,
+    bool Function() valid,
+  ) async {
     if (current.payload.image != null) {
+      final bytes = await _ensureImage(current);
+      if (!valid()) throw _ClipboardOperationCancelled();
       return clipboard.writeImage(
-        await _ensureImage(current),
+        bytes,
         text: current.payload.text,
         expectedRevision: expectedRevision,
       );
     }
     if (current.kind == 'files') {
       final files = await _ensureFiles(current);
+      if (!valid()) throw _ClipboardOperationCancelled();
       return clipboard.writeFiles(
         files.roots,
         expectedRevision: expectedRevision,
       );
     }
+    if (!valid()) throw _ClipboardOperationCancelled();
     return clipboard.write(current.text, expectedRevision: expectedRevision);
   }
 
@@ -1636,19 +1737,36 @@ class AppController extends ChangeNotifier {
 
   void _queueApply(ClipItem current) {
     final guard = _revision;
+    final connection = _connectionGeneration;
+    bool valid() =>
+        !_disposed &&
+        sharing &&
+        _autoAccepts(current) &&
+        current.id == item?.id &&
+        !current.expired &&
+        guard == _revision &&
+        connection == _connectionGeneration &&
+        !_localDirty &&
+        !_resumeGuard;
     _application = _application
         .then((_) async {
-          final expectedRevision = _observedRevision;
-          if (!sharing ||
-              !_autoAccepts(current) ||
-              current.id != item?.id ||
-              current.expired ||
-              guard != _revision ||
-              _localDirty ||
-              _resumeGuard ||
-              expectedRevision == null) {
-            return;
+          if (!valid()) return;
+          // A previous write may have succeeded while confirmation stayed busy.
+          // Only a known Hopboard write may advance the expected revision here.
+          if (_clipboardNeedsReconcile) {
+            final snapshot = await _retryClipboard(clipboard.read, valid);
+            if (!snapshot.ownWrite) {
+              unawaited(_clipboardChanged());
+              itemStatus = 'Your local copy is protected. Copy to replace it.';
+              _receipt(current, 'needsAction');
+              _notify();
+              return;
+            }
+            _observedRevision = snapshot.revision;
+            _clipboardNeedsReconcile = false;
           }
+          final expectedRevision = _observedRevision;
+          if (expectedRevision == null) return;
           if (current.kind == 'files') {
             try {
               await _ensureFiles(current);
@@ -1660,11 +1778,14 @@ class AppController extends ChangeNotifier {
             try {
               await _ensureImage(current);
             } catch (_) {
-              if (guard == _revision &&
-                  sharing &&
-                  current.id == item?.id &&
-                  !current.expired) {
-                if (await _fallbackMixed(current, guard, expectedRevision)) {
+              if (valid()) {
+                final fallback = await _fallbackMixed(
+                  current,
+                  guard,
+                  expectedRevision,
+                );
+                if (!valid()) return;
+                if (fallback) {
                   itemStatus = 'Text ready · image needs attention';
                 } else {
                   itemStatus = 'Image needs attention · tap Copy image';
@@ -1675,59 +1796,82 @@ class AppController extends ChangeNotifier {
               return;
             }
           }
-          for (var attempt = 0; attempt < 4; attempt++) {
-            if (guard != _revision ||
-                !sharing ||
-                !_autoAccepts(current) ||
-                current.id != item?.id) {
+          var wrote = false;
+          try {
+            final success = await _retryClipboard(
+              () => _writeItem(current, expectedRevision, valid),
+              valid,
+            );
+            if (!success) {
+              _resumeGuard = true;
+              unawaited(_clipboardChanged());
+              itemStatus = 'Your local copy is protected. Copy to replace it.';
+              _receipt(current, 'needsAction');
+              _notify();
               return;
             }
-            try {
-              final success = await _writeItem(current, expectedRevision);
-              if (!success) {
-                _resumeGuard = true;
-                break;
-              }
-              final snapshot = await _readApplied(current);
-              if (!_matches(snapshot, current)) {
-                unawaited(_clipboardChanged());
-                itemStatus = 'Local clipboard changed';
-                _receipt(current, 'needsAction');
-                _notify();
-                return;
-              }
-              _observedRevision = snapshot.revision;
-              itemStatus = 'Ready to paste';
-              _receipt(current, 'applied');
+            wrote = true;
+            _clipboardNeedsReconcile = true;
+            final snapshot = await _retryClipboard(
+              () => _readApplied(current),
+              valid,
+            );
+            if (!_matches(snapshot, current)) {
+              unawaited(_clipboardChanged());
+              itemStatus = 'Local clipboard changed';
+              _receipt(current, 'needsAction');
               _notify();
-              // Say who replaced the clipboard, so an unexpected paste is
-              // noticed before it goes anywhere. Never include the text.
-              unawaited(
-                clipboard
-                    .notify(
-                      'Clipboard replaced',
-                      '${current.kind == 'files'
-                          ? 'Files'
-                          : current.payload.isText
-                          ? 'Text'
-                          : 'Image'} from ${current.senderName} is ready to paste.',
-                    )
-                    .catchError((Object _) {}),
-              );
               return;
-            } catch (_) {
-              await Future<void>.delayed(
-                Duration(milliseconds: 35 * (attempt + 1)),
-              );
+            }
+            _observedRevision = snapshot.revision;
+            _clipboardNeedsReconcile = false;
+            itemStatus = 'Ready to paste';
+            _receipt(current, 'applied');
+            _notify();
+            // Say who replaced the clipboard, so an unexpected paste is
+            // noticed before it goes anywhere. Never include the text.
+            unawaited(
+              clipboard
+                  .notify(
+                    'Clipboard replaced',
+                    '${current.kind == 'files'
+                        ? 'Files'
+                        : current.payload.isText
+                        ? 'Text'
+                        : 'Image'} from ${current.senderName} is ready to paste.',
+                  )
+                  .catchError((Object _) {}),
+            );
+            return;
+          } on _ClipboardOperationCancelled {
+            return;
+          } catch (_) {
+            if (!valid()) return;
+            if (wrote) {
+              itemStatus = 'Clipboard confirmation failed. Copy to try again.';
+              _receipt(current, 'needsAction');
+              _notify();
+              return;
             }
           }
-          itemStatus = await _fallbackMixed(current, guard, expectedRevision)
+          final fallback = await _fallbackMixed(
+            current,
+            guard,
+            expectedRevision,
+          );
+          if (!valid()) return;
+          itemStatus = fallback
               ? 'Text ready · image needs attention'
-              : 'Clipboard needs attention · tap Copy';
+              : 'Clipboard write failed. Copy to try again.';
           _receipt(current, 'needsAction');
           _notify();
         })
-        .catchError((Object _) {});
+        .catchError((Object failure) {
+          if (failure is _ClipboardOperationCancelled || !valid()) return;
+          itemStatus = 'Clipboard confirmation failed. Copy to try again.';
+          _receipt(current, 'needsAction');
+          _notify();
+        });
   }
 
   Future<void> copyReceived() {
@@ -1752,13 +1896,23 @@ class AppController extends ChangeNotifier {
     _revision++;
     _cancelPublication(null);
     final guard = _revision;
-    final expected = canAutomatic ? (await clipboard.read()).revision : null;
+    final connection = _connectionGeneration;
+    bool valid() =>
+        !_disposed &&
+        sharing &&
+        guard == _revision &&
+        connection == _connectionGeneration &&
+        current.id == item?.id &&
+        !current.expired;
+    final expected = canAutomatic
+        ? (await _retryClipboard(clipboard.read, valid)).revision
+        : null;
     if (current.kind == 'files') await _ensureFiles(current);
     if (current.payload.image != null) {
       try {
         await _ensureImage(current);
       } catch (_) {
-        if (await _fallbackMixed(current, guard, expected)) {
+        if (await _fallbackMixed(current, guard, expected) && valid()) {
           itemStatus = 'Text ready · image needs attention';
           _receipt(current, 'needsAction');
           _notify();
@@ -1766,31 +1920,33 @@ class AppController extends ChangeNotifier {
         rethrow;
       }
     }
-    var success = false;
-    for (var attempt = 0; attempt < 4; attempt++) {
-      if (guard != _revision ||
-          current.id != item?.id ||
-          current.expired ||
-          !sharing) {
-        break;
-      }
-      try {
-        success = await _writeItem(current, expected);
-        if (success) break;
-      } catch (_) {
-        await Future<void>.delayed(const Duration(milliseconds: 50));
-      }
-    }
+    final success = await _retryClipboard(
+      () => _writeItem(current, expected, valid),
+      valid,
+    );
     if (!success) {
-      if (await _fallbackMixed(current, guard, expected)) {
+      if (await _fallbackMixed(current, guard, expected) && valid()) {
         itemStatus = 'Text ready · image needs attention';
         _receipt(current, 'needsAction');
         _notify();
       }
       throw SessionException('Could not update the clipboard. Try Copy again.');
     }
+    _clipboardNeedsReconcile = true;
     if (canAutomatic) {
-      final snapshot = await _readApplied(current);
+      final ClipboardSnapshot snapshot;
+      try {
+        snapshot = await _retryClipboard(() => _readApplied(current), valid);
+      } on PlatformException {
+        if (valid()) {
+          itemStatus = 'Clipboard confirmation failed. Copy to try again.';
+          _receipt(current, 'needsAction');
+          _notify();
+        }
+        throw SessionException(
+          'Clipboard confirmation failed. Copy to try again.',
+        );
+      }
       if (!_matches(snapshot, current)) {
         throw SessionException(
           'Your newer local copy was preserved. Try Copy again.',
@@ -1798,6 +1954,7 @@ class AppController extends ChangeNotifier {
       }
       _observedRevision = snapshot.revision;
     }
+    _clipboardNeedsReconcile = false;
     _localDirty = false;
     _resumeGuard = false;
     conflictText = null;
@@ -2011,6 +2168,7 @@ class AppController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _cancelClipboardCapture();
     _cancelImageReceive();
     _cacheSweep?.cancel();
     _disposed = true;

@@ -2,6 +2,7 @@
 *.class
 *.log
 *.pyc
+__pycache__/
 *.swp
 .DS_Store
 .atom/
@@ -43,6 +44,7 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+/android/.kotlin/
 
 # Widget Preview related
 .widget_preview/
@@ -50,8 +52,8 @@ app.*.map.json
 # Project-local build tools and packaged outputs.
 /.tools/
 /dist/*
-!/dist/LocalClipboard-Setup-0.1.2-x64.exe
-!/dist/LocalClipboard-Setup-0.1.2-x64.exe.sha256
+!/dist/Hopboard-Setup-0.1.2-x64.exe
+!/dist/Hopboard-Setup-0.1.2-x64.exe.sha256
 /artifacts/
 
 # Flutter regenerates these plugin registration files during dependency setup.
