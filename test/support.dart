@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
 
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:local_clipboard/app/controller.dart';
 import 'package:local_clipboard/core/identity.dart';
@@ -17,6 +17,23 @@ class FakeClipboard extends ClipboardBridge {
   int writes = 0;
   final notices = <String>[];
   void Function()? beforeWrite;
+  DateTime? readBusyUntil;
+  Duration? busyAfterWrite;
+  int readAttempts = 0;
+  int writeAttempts = 0;
+  int busyWrites = 0;
+  Object? readFailure;
+  Completer<void>? readGate;
+
+  Future<void> _checkRead() async {
+    readAttempts++;
+    await readGate?.future;
+    if (readFailure != null) throw readFailure!;
+    if (readBusyUntil?.isAfter(DateTime.now()) == true) {
+      throw PlatformException(code: 'busy', message: 'Clipboard busy.');
+    }
+  }
+
   @override
   bool get supportsAutomatic => true;
   @override
@@ -82,29 +99,36 @@ class FakeClipboard extends ClipboardBridge {
   }
 
   @override
-  Future<ClipboardSnapshot> read() async => ClipboardSnapshot(
-    text,
-    revision,
-    ownWrite: own,
-    sensitive: sensitive,
-    hasImage: png != null,
-    hasFiles: filePaths.isNotEmpty,
-    filePaths: filePaths,
-    cut: cut,
-  );
+  Future<ClipboardSnapshot> read() async {
+    await _checkRead();
+    return ClipboardSnapshot(
+      text,
+      revision,
+      ownWrite: own,
+      sensitive: sensitive,
+      hasImage: png != null,
+      hasFiles: filePaths.isNotEmpty,
+      filePaths: filePaths,
+      cut: cut,
+    );
+  }
+
   @override
-  Future<ClipboardSnapshot> readContent({bool includeImages = true}) async =>
-      ClipboardSnapshot(
-        text,
-        revision,
-        ownWrite: own,
-        sensitive: sensitive,
-        png: includeImages ? png : null,
-        hasImage: png != null,
-        hasFiles: filePaths.isNotEmpty,
-        filePaths: filePaths,
-        cut: cut,
-      );
+  Future<ClipboardSnapshot> readContent({bool includeImages = true}) async {
+    await _checkRead();
+    return ClipboardSnapshot(
+      text,
+      revision,
+      ownWrite: own,
+      sensitive: sensitive,
+      png: includeImages ? png : null,
+      hasImage: png != null,
+      hasFiles: filePaths.isNotEmpty,
+      filePaths: filePaths,
+      cut: cut,
+    );
+  }
+
   @override
   Future<bool> writeImage(
     Uint8List bytes, {
@@ -121,6 +145,11 @@ class FakeClipboard extends ClipboardBridge {
 
   @override
   Future<bool> write(String value, {int? expectedRevision}) async {
+    writeAttempts++;
+    if (busyWrites > 0) {
+      busyWrites--;
+      throw PlatformException(code: 'busy', message: 'Clipboard busy.');
+    }
     final hook = beforeWrite;
     beforeWrite = null;
     hook?.call();
@@ -133,6 +162,10 @@ class FakeClipboard extends ClipboardBridge {
     own = true;
     sensitive = false;
     writes++;
+    if (busyAfterWrite != null) {
+      readBusyUntil = DateTime.now().add(busyAfterWrite!);
+      busyAfterWrite = null;
+    }
     changes.add(null);
     return true;
   }

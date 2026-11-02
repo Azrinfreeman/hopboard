@@ -1,12 +1,13 @@
 # Project status
 
-Last updated 30 October 2026. Current source: **0.2.0-dev**. Published: [v0.2.0-dev pre-release](https://github.com/Azrinfreeman/hopboard/releases/tag/v0.2.0-dev) (Windows installer) and v0.1.2.
+Last updated 3 November 2026. Current source: **0.2.0+5**. Windows installer: [v0.2.0](https://github.com/Azrinfreeman/hopboard/releases/tag/v0.2.0). Earlier releases include v0.2.0-dev and v0.1.2.
 
 ## Done
 
 - Text sharing over the local network: pinned TLS, six-digit SRP pairing, host approval, mDNS discovery, automatic sync with conflict handling (Windows and Android; iPhone source included but never built).
 - Windows images, mixed text and image copies, files, folders and ZIP packaging, with a separate data connection, per-kind consent, a cleaned-up receive cache and automatic downloads up to 256 MiB.
 - Update notice for older devices, and an Update button on Windows.
+- Automatic clipboard contention recovery and separate write confirmation, with clearer manual-copy reasons. Version 0.2.0+5 passes 104 tests excluding the large transfer, static analysis, and the Windows release build. The user reports the preceding development installer works. Native contention and two-PC validation remain open.
 - 60-second trailer ([`video/hopboard-trailer`](video/hopboard-trailer), published at `docs/media/Hopboard-Trailer.mp4`).
 
 Automated tests cover the protocol, real loopback TLS, controller races and widget layouts. Results and commands are in [VALIDATION.md](VALIDATION.md).
