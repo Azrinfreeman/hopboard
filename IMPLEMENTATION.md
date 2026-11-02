@@ -1,4 +1,141 @@
-# Automatic clipboard reliability
+# Automatic text replacement: protected local-copy follow-up
+
+Status: implemented in source, 3 November 2026. Final 121-test run excluding `large`, static analysis and Windows debug build pass. An earlier full 121-test run also passed the 1 GiB relay; one subsequent controller regression was added. Physical two-PC acceptance remains open. See [IMPLEMENTATION.notes.md](IMPLEMENTATION.notes.md). The completed 0.2.0 plan below is retained as historical context.
+
+Contents: [Findings](#current-findings) · [Proposed behavior](#proposed-behavior) · [Work](#planned-work) · [Verification](#follow-up-verification) · [Limits](#limits-and-completion)
+
+## Outcome
+
+With automatic sharing enabled on both Windows devices, a fresh text copy on the PC should replace ordinary old clipboard text on the connected laptop and become ready to paste without pressing Copy. Keep genuine unresolved local changes protected.
+
+The user's screenshot shows: “Your local copy is protected. Copy to replace it.” This confirms the receiving UI is reporting a protection decision. It does not identify which guard caused it or establish the installed versions and settings. The investigation below is grounded in checkout `5e6de46` (0.2.0+5), not a live trace from the laptop.
+
+## Current findings
+
+### Startup clipboard content can block every later incoming item
+
+Before this follow-up, [`lib/app/controller.dart`](lib/app/controller.dart) used this in `_baseline()`:
+
+```dart
+_resumeGuard =
+    _localDirty ||
+    (_observedRevision == null
+        ? snapshot.hasContent
+        : snapshot.revision != _observedRevision);
+```
+
+Both `startHost()` and `_connect()` call `_baseline()`. Previously, existing startup text made `_resumeGuard` true, blocking incoming writes indefinitely. The new controller tracks the reason and revision, preserving the initial snapshot while allowing later fresh remote text to release ordinary startup protection. Tests reproduced the old failure in both receiving roles.
+
+Consequently, ordinary text already on the laptop when it connects can prevent subsequent automatic replacement indefinitely. `_copyReceived()` clears both flags after a verified write, explaining why pressing Copy restores automatic reception. This is a confirmed source path and a likely explanation of the screenshot; it has not been reproduced on the user's laptop.
+
+### A temporary local-send conflict can leave a stale guard
+
+Previously, the incoming `state` handler set `_resumeGuard = true` when `_localDirty`, `_pending`, or `_candidate` was present. The matching `ack` handler cleared `_localDirty` without clearing that guard.
+
+A controlled held-ack test reproduced this stale guard against unchanged source. The fix releases only protection owned by the acknowledged clipboard revision, with no newer candidate or unresolved capture. Rejected publications and newer private copies remain protected. The previously blocked remote item is not applied retroactively.
+
+### The same message also covers legitimate protection
+
+`_manualCopyReason()` reports the same text for several states. Private copies, invitation copies, offline local edits, pending publication, native revision rejection, and an unreadable baseline can all require protection. `_clipboardChanged()` marks an external revision dirty before checking privacy, connection readiness, and publishability. These paths must remain distinguishable from harmless startup content.
+
+The 0.2.0 fix addressed capture contention and verification retries; it deliberately preserved these guards. More retries alone will not resolve the startup policy. No evidence currently implicates transport loss or Windows focus handling in this screenshot.
+
+## Proposed behavior
+
+The following Windows policy was approved by the user's instruction to proceed and is implemented in source. It has not been deployed to the user's devices.
+
+| Receiving state | Proposed result |
+| --- | --- |
+| Ordinary text already present before first connection | Keep it during the initial session snapshot; allow a later fresh remote text item to replace it automatically. Never publish the old text automatically. |
+| Initial snapshot or duplicate/replayed state | Do not use it to release startup protection. |
+| Matching local publication successfully acknowledged, with unchanged local revision and no newer candidate or explicit conflict | Release only protection caused by that publication. Permit the next fresh eligible remote item. |
+| Private content, pairing invitation, offline/paused local edit, rejected publication, or simultaneous-send conflict | Preserve local content until an existing deliberate resolution or a valid later local publication resolves that specific protection. |
+| Local revision changes during incoming preparation/write/confirmation | Preserve the newer local copy. Keep native expected-revision checks. |
+| Clipboard cannot be classified/read | Retain protection and show a read/confirmation reason; a successful retry may resolve uncertainty only after classification. |
+
+Apply the startup relaxation only to confirmed ordinary text on Windows. Keep current mobile behavior, image/file consent, file limits, and protections for other baseline content. Automatic mode already authorizes replacement by new remote copies; do not add another setting or clear all protections whenever a message arrives.
+
+First-time enabling of Automatic sharing follows the same ordinary-text policy. If already connected, preserve the clipboard and currently displayed item at enable time; only a later live state newer than the captured epoch/sequence boundary can release ordinary-baseline protection. Re-enabling after a local change while automatic mode was off must preserve that offline-style local protection; classify the revision change before resetting any dirty flag. Unpausing and reconnecting retain the existing offline-local-copy policy.
+
+## Planned work
+
+### 1. Reproduce the two guard paths
+
+- [x] In [`test/controller_test.dart`](test/controller_test.dart), build a startup case with non-empty ordinary text before the first host/join baseline. The current fixture pairs two initially empty `FakeClipboard` instances and misses this condition. Reuse [`test/support.dart`](test/support.dart); add only narrowly needed controls.
+- [x] Verify that startup text is not sent, the initial snapshot leaves it intact, and a later PC copy currently produces the protected status instead of updating the laptop clipboard. Test both host/client receiving roles.
+- [x] Add controlled publication/ack ordering to reproduce an incoming remote item while a local send is pending, followed by a matching ack. Avoid delay-based guesses. Verify the guard remains stale only when no actual publication conflict remains.
+
+Verification completed: both startup acceptance cases and the controlled acknowledgement overlap failed against unchanged source and pass with the fix.
+
+### 2. Give protection a reason and revision
+
+Location: guard fields, `_baseline()`, `_clipboardChanged()`, `state`/`ack` handling, `_queueApply()`, `_copyReceived()`, `copyInvitation()`, `sendMine()`, and lifecycle/settings transitions in [`lib/app/controller.dart`](lib/app/controller.dart).
+
+- [x] Introduce a small private protection reason and associated clipboard revision where needed. Distinguish ordinary startup text, unresolved local copy/publication, explicit conflict, private/invitation content, and unknown clipboard state. Audit every existing assignment to `_resumeGuard` and `_localDirty`; avoid a second competing guard mechanism.
+- [x] Capture first-baseline versus reconnect/resume context explicitly. Preserve offline changes across repeated baselines; a second baseline with the same revision must not accidentally erase a real guard. A failed read must not be classified as ordinary startup text.
+- [x] Classify ordinary startup text from a successful snapshot: non-empty text, no image/files, not sensitive, and no existing explicit protection. Do not send that snapshot. Retain its protection for the initial session state.
+- [x] For a genuinely newer live remote text state, release only ordinary-startup protection. Use the existing `initial`, epoch and display-sequence handling to reject snapshots, duplicates and stale states. Preserve native expected-revision checks against the baseline revision, including if a local event is still being read.
+- [x] On matching publication acknowledgement, release only publication-owned protection for the acknowledged current revision, with no newer candidate, unresolved capture, or explicit conflict. A stale ack cannot release a newer private/local guard. Do not automatically apply the previously blocked remote item after ack; the next fresh remote item exercises normal receive eligibility.
+- [x] Ensure manual Copy and Send my text resolve only the intended current conflict. Preserve cancellation checks across pause, leave, mode changes, expiry and disposal. Baseline reads must not commit stale results after such transitions.
+
+Verification: startup regression and confirmed overlap regression pass; existing privacy, offline-copy, invitation, contention, and revision-race tests continue to pass. No echo publication or older clipboard overwrite is introduced.
+
+### 3. Show an actionable reason for remaining manual cases
+
+Location: `_manualCopyReason()` and receive status handling in [`lib/app/controller.dart`](lib/app/controller.dart); existing presentation in [`lib/app/ui.dart`](lib/app/ui.dart) only if necessary.
+
+- [x] Report the actual reason without exposing clipboard contents: for example, “Local copy made while disconnected. Copy to replace it.” Use a neutral protection message for private content, and a separate message for clipboard read failure.
+- [x] For a pending ordinary publication, show that it is waiting for the local send rather than implying a permanent conflict. Clear stale status when that specific condition resolves.
+- [x] Extend [`test/widget_test.dart`](test/widget_test.dart) for remaining protected states and Copy availability using the existing layouts and scaling checks. Successful fresh reception must show Ready to paste.
+
+Verification: automatic startup reception needs no click; deliberately protected content retains Copy and the existing explicit conflict actions, with accurate status.
+
+### 4. Record validation and update behavior documentation
+
+- [x] Update [`README.md`](README.md) to distinguish preserving the initial clipboard from accepting later fresh remote text. Explain the remaining deliberate manual cases.
+- [x] Update [`VALIDATION.md`](VALIDATION.md) with actual test commands/results and remaining device checks. Update [`STATUS.md`](STATUS.md) when implementation status changes. Keep this plan's checkboxes evidence-based.
+- [x] Record material deviations and the final verification outcome in [`IMPLEMENTATION.notes.md`](IMPLEMENTATION.notes.md).
+
+## Follow-up verification
+
+Regression checks, static analysis and the Windows debug build have run using the existing SDK at `D:/flutter-3.47.6/flutter`. Final commands and results are recorded in [IMPLEMENTATION.notes.md](IMPLEMENTATION.notes.md) and [VALIDATION.md](VALIDATION.md). The physical checks below remain open.
+
+```powershell
+flutter test test/controller_test.dart test/widget_test.dart --no-pub
+flutter analyze --no-pub
+flutter test --no-pub
+flutter build windows --debug --no-pub
+```
+
+Required regression scenarios and expected results:
+
+- Start the receiver with ordinary old text: initial state preserves it; two subsequent fresh remote copies each reach the clipboard without Copy; old text is never published.
+- Enable Automatic sharing for the first time while connected with old text and an existing displayed item: neither is copied/sent at enable time; the next fresh remote text applies. Disable automatic mode, make a local copy, then re-enable: preserve that intervening local copy.
+- Start with an existing host item, then reconnect and replay/duplicate it: it cannot be mistaken for a fresh live copy that releases startup protection.
+- Copy locally while disconnected or paused, resume/reconnect, and receive new text: retain local protection and explicit resolution.
+- Exercise sensitive text, copied invitation, images/files at startup, disabled automatic mode, and category consent: retain existing behavior.
+- Delay a local publication ack and interleave a remote state: after a matching successful ack, the next remote copy applies only when no genuine conflict/newer local copy remains. Repeat with a stale ack and a newer private copy: private content survives.
+- Change the clipboard immediately before the native write or during confirmation: the newer local copy survives; the item is not falsely reported as applied.
+- Make baseline reads busy/fail or delay them across lifecycle changes: retain protection without misclassifying startup content or committing a stale baseline.
+- Retain the existing 600 ms capture/confirmation recovery and no-echo tests from 0.2.0.
+
+On two Windows PCs using matching candidate builds, start the laptop with harmless pre-existing Notepad text, connect with Automatic sharing enabled, then copy two new texts on the PC. Paste each into Notepad on the laptop without touching Hopboard's Copy button. Repeat with receiver roles reversed and the receiver minimized/in the tray. Repeat the offline-local-copy and private-copy preservation cases. Record both versions, settings, sequence, status and pasted result; do not log private clipboard contents.
+
+## Limits and completion
+
+This follow-up changes the controller, regression tests and behavior/validation documentation, and produces a local Windows debug build. No installer, commit, push, release or installed app was updated.
+
+Subsequent packaging/distribution request: a `0.2.1+6` release installer was built and verified for [v0.2.1](https://github.com/Azrinfreeman/hopboard/releases/tag/v0.2.1). See [IMPLEMENTATION.notes.md](IMPLEMENTATION.notes.md#local-release-installer). It was not installed during verification.
+
+Both source failures were reproduced and fixed with controlled adapters over real loopback TLS. The exact laptop trigger remains unverified because the screenshot does not expose protection state or timing. Private/offline content and rejected publications retain protection in the regression checks.
+
+This change affects how old ordinary Windows text is treated after first connection. No preference, protocol or pairing migration is required. Automated implementation checks are complete; physical acceptance remains open:
+
+- [ ] Run the two-PC copy/paste checks above with matching candidate builds, including reversed roles, tray operation and private/offline-copy preservation.
+
+---
+
+# Previous plan: automatic clipboard reliability (0.2.0)
 
 Status: implemented in source; automated checks pass. Native contention and two-PC validation remain open. Investigation and implementation date: 3 November 2026.
 

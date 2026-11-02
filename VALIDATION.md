@@ -4,6 +4,26 @@ Records observed results; sections are dated. The first section was checked on 1
 
 Paths under `artifacts/`, `build/`, and uncommitted packages in `dist/` refer to generated local outputs. They are removed during cleanup and can be recreated with the commands below.
 
+## Automatic text replacement follow-up (3 November 2026)
+
+### Local 0.2.1 release installer
+
+Distribution: the user subsequently authorized committing/pushing the source and uploading the installer and checksum as [v0.2.1 release assets](https://github.com/Azrinfreeman/hopboard/releases/tag/v0.2.1). The build-time checks below do not establish successful installation or physical-device acceptance.
+
+- At the user's request, updated package version to `0.2.1+6` and peer-advertised application version to `0.2.1`. `flutter build windows --release --no-pub`: **passed**. `flutter test test/update_test.dart --no-pub`: **4 tests passed**.
+- Built `dist/Hopboard-Setup-0.2.1-x64.exe` with `./tools/build_windows_installer.ps1 -SkipBuild` and Inno Setup 6.7.3. Verified application version `0.2.1+6`, installer file version `0.2.1.6`, all 12 staged release files matching the release output, and inclusion of `msvcp140.dll`, `vcruntime140.dll`, and `vcruntime140_1.dll`.
+- Installer size: **11,431,896 bytes**. SHA-256 matches the adjacent checksum file: `a377c0f5c6846664f8426e6e07f276b723357b5443ce4a8e88d9471ea1e312aa`.
+- Unsigned local release package; installation, upgrade and two-PC acceptance remain unverified. No GitHub release or running installation was updated.
+
+### Source verification before packaging
+
+- Reproduced ordinary startup text blocking fresh remote reception in both host/client receiving roles, and a stale guard after a delayed matching publication acknowledgement. These three acceptance tests failed against unchanged source and pass after the fix.
+- Added **16 controller regressions** and **one widget test**. Coverage includes startup snapshot/replay protection, fresh text in both directions without echo, private/image/file/unreadable baselines, first enable/re-enable, paused edits, stale baseline reads, pending-publication status, stale acknowledgements before/after private-copy classification, rejected publications, native revision rejection, and an explicit typed-send conflict surviving recovery from a failed first baseline. Widget checks cover remaining manual reasons and Copy availability at desktop/narrow widths.
+- Final `flutter test --no-pub --exclude-tags large`: **121 tests passed** in 36 seconds. Earlier `flutter test --no-pub`: **121 tests passed** in 2 minutes 44 seconds, including the **1 GiB TLS relay**. One final controller guard refinement/regression followed that full run; the final non-large run includes it. The unchanged relay was not repeated afterward.
+- Final `flutter analyze --no-pub`: **no issues**. Final `flutter build windows --debug --no-pub`: **passed**, producing `build/windows/x64/runner/Debug/local_clipboard.exe`. Used the existing SDK at `D:/flutter-3.47.6/flutter/bin`; no dependencies or lockfile changed.
+- `git diff --check`: **passed**. Relative documentation links checked. Details and manual acceptance steps: [IMPLEMENTATION.notes.md](IMPLEMENTATION.notes.md).
+- **Not performed:** native clipboard tests or two-PC paste/tray/private-copy validation. The real OS clipboard and installed application were not changed. No installer or release was produced; published 0.2.0 does not contain this follow-up.
+
 ## Verified
 
 | Check | Result |

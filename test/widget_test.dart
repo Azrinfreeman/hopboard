@@ -305,6 +305,58 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
+  testWidgets('protected and ready clipboard states keep Copy available', (
+    tester,
+  ) async {
+    final app = await testController(Identity('Clipboard states', '', ''));
+    app.host = _PreviewHost();
+    app.connected = true;
+    app.item = ClipItem(
+      id: 'remote',
+      sequence: 1,
+      senderId: 'peer',
+      senderName: 'Peer',
+      text: 'Received text',
+      lifetime: const Duration(minutes: 5),
+    );
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      app.dispose();
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+      tester.platformDispatcher.clearAllTestValues();
+    });
+    tester.view.physicalSize = const Size(1440, 900);
+    await tester.pumpWidget(ClipboardApp(controller: app));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('destination-1')));
+    for (final width in [1440.0, 390.0]) {
+      tester.view.physicalSize = Size(width, 900);
+      for (final status in [
+        'Your local copy is protected. Copy to replace it.',
+        'Local copy made while sharing was inactive. Copy to replace it.',
+        'Waiting for your local copy to finish sending.',
+        'Clipboard could not be checked. Copy to try again.',
+        'Available in app. Waiting for the next shared copy.',
+        'Ready to paste',
+      ]) {
+        app.itemStatus = status;
+        app.notifyListeners();
+        await tester.pumpAndSettle();
+        expect(find.text(status), findsWidgets);
+        expect(
+          tester
+              .widget<FilledButton>(find.widgetWithText(FilledButton, 'Copy'))
+              .onPressed,
+          isNotNull,
+        );
+        expect(tester.takeException(), isNull);
+      }
+    }
+    expect((app.clipboard as FakeClipboard).writes, 0);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('idle setup, saved hosts and keyboard pairing stay usable', (
     tester,
   ) async {

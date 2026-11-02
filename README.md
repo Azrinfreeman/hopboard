@@ -29,11 +29,11 @@ Hopboard moves text between your own devices over your local network. It needs n
 - **Clipboard privacy:** copies that password managers mark as private are never sent automatically.
 - **Tested:** automated tests cover real TLS connections and attack cases such as spoofed hosts, guessed codes and connection floods.
 
-Built with Flutter and Dart for Windows and Android (iPhone source included, not yet built). Current source is 0.2.0+5. Remaining physical-device checks are listed in [VALIDATION.md](VALIDATION.md). This code has not had an independent security audit. The Windows installer is unsigned, so Windows SmartScreen will warn when you run it.
+Built with Flutter and Dart for Windows and Android (iPhone source included, not yet built). Current source is 0.2.1+6. Remaining physical-device checks are listed in [VALIDATION.md](VALIDATION.md). This code has not had an independent security audit. The Windows installer is unsigned, so Windows SmartScreen will warn when you run it.
 
 ## Download
 
-Get the Windows installer from the [0.2.0 release](https://github.com/Azrinfreeman/hopboard/releases/tag/v0.2.0). It includes image, file and folder sharing and automatic clipboard recovery. The installer is unsigned, so Windows SmartScreen will warn; check the download against the attached `.sha256` file. An Android APK is not on a release yet.
+Get the Windows installer from the [0.2.1 release](https://github.com/Azrinfreeman/hopboard/releases/tag/v0.2.1). It includes the automatic text replacement fix, clipboard contention recovery, and image, file and folder sharing. The installer is unsigned, so Windows SmartScreen will warn; check the download against the attached `.sha256` file. Quit Hopboard from its system tray menu before upgrading. An Android APK is not on a release yet.
 
 ## Windows images, files and folders
 
@@ -93,6 +93,8 @@ iOS source is included. An iPhone build requires a Mac, Xcode, a signing team, a
 Phones cannot provide unrestricted background clipboard sharing. Moving a phone host to the background stops its session. A joined phone reconnects when reopened. **Keep screen awake** is available during phone hosting.
 
 The app preserves text copied while disconnected or outside the phone app. If it cannot safely replace the clipboard, choose **Use received text** or **Send my text**. Simultaneous sends are resolved explicitly. “Available in app” and “Ready to paste” are separate states.
+
+In the current Windows source, ordinary text already on the clipboard is preserved when connecting or first enabling Automatic sharing. A later fresh remote text copy replaces it automatically; initial session snapshots and duplicate updates do not. Private content, copied invitations, and local edits made while sharing was paused, disconnected or disabled remain protected. A confirmed local send releases protection for that specific copy, so subsequent remote copies can arrive automatically. This follow-up is not included in the published 0.2.0 installer.
 
 Automatic capture and clipboard replacement retry temporary clipboard contention for up to five seconds. A successful write is confirmed separately, so a busy confirmation read does not repeat the write or create a false local-copy conflict. Hopboard explains when a local copy is protected, automatic image/file sharing is off, or a file exceeds the automatic download limit. Explorer-copied videos follow the same file limits; larger videos still require **Download**. Install version 0.2.0 to get these recovery changes.
 

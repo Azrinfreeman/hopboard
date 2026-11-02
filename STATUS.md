@@ -1,6 +1,6 @@
 # Project status
 
-Last updated 3 November 2026. Current source: **0.2.0+5**. Windows installer: [v0.2.0](https://github.com/Azrinfreeman/hopboard/releases/tag/v0.2.0). Earlier releases include v0.2.0-dev and v0.1.2.
+Last updated 3 November 2026. Current source: **0.2.1+6**. Windows installer: [v0.2.1](https://github.com/Azrinfreeman/hopboard/releases/tag/v0.2.1), with a verified SHA-256 checksum. Installation and two-PC acceptance remain open. Earlier releases include v0.2.0, v0.2.0-dev and v0.1.2.
 
 ## Done
 
@@ -8,6 +8,7 @@ Last updated 3 November 2026. Current source: **0.2.0+5**. Windows installer: [v
 - Windows images, mixed text and image copies, files, folders and ZIP packaging, with a separate data connection, per-kind consent, a cleaned-up receive cache and automatic downloads up to 256 MiB.
 - Update notice for older devices, and an Update button on Windows.
 - Automatic clipboard contention recovery and separate write confirmation, with clearer manual-copy reasons. Version 0.2.0+5 passes 104 tests excluding the large transfer, static analysis, and the Windows release build. The user reports the preceding development installer works. Native contention and two-PC validation remain open.
+- Automatic text replacement fix included in 0.2.1: ordinary Windows startup text accepts later fresh remote copies; matching publication acknowledgements release only their own temporary protection. Private/offline copies and real conflicts stay protected. Final 121 tests excluding `large`, static analysis and debug/release builds pass; an earlier full run also passed the 1 GiB relay. See [IMPLEMENTATION.notes.md](IMPLEMENTATION.notes.md) for validation and remaining two-PC checks.
 - 60-second trailer ([`video/hopboard-trailer`](video/hopboard-trailer), published at `docs/media/Hopboard-Trailer.mp4`).
 
 Automated tests cover the protocol, real loopback TLS, controller races and widget layouts. Results and commands are in [VALIDATION.md](VALIDATION.md).
