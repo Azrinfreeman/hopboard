@@ -33,7 +33,7 @@ Built with Flutter and Dart for Windows and Android (iPhone source included, not
 
 ## Download
 
-Get the Windows installer from the [0.3.0 release](https://github.com/Azrinfreeman/hopboard/releases/tag/v0.3.0). It adds the seamless clipboard: newest copy wins, files that stream while Explorer pastes, and formatted text. Install it on every PC; earlier releases lack these. The installer is unsigned, so Windows SmartScreen will warn; check the download against the attached `.sha256` file. Quit Hopboard from its system tray menu before upgrading. An Android APK is not on a release yet.
+Get the Windows installer from the [0.3.0 release](https://github.com/Azrinfreeman/hopboard/releases/tag/v0.3.0). It adds the seamless clipboard: newest copy wins, files that stream while Explorer pastes, and formatted text. Install it on every PC; earlier releases lack these. The installer is unsigned, so Windows SmartScreen will warn; check the download against the attached `.sha256` file. Quit Hopboard from its system tray menu before upgrading. The Android ARM64 APK (`Hopboard-Android-arm64.apk`, signed with the owner release key, certificate SHA-256 `9a2bdc94972cbb1a2d58030056c5cf891bc97969c47d6e91ee96fcdcab305ecd`) is attached to the same release; it was published before the physical-device checks in [VALIDATION.md](VALIDATION.md) were completed, so treat Android as a preview.
 
 ## Seamless clipboard on Windows
 
