@@ -3,6 +3,11 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Background receive: a visible foreground service keeps the app alive. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <application
         android:label="Hopboard"
@@ -32,6 +37,42 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <activity
+            android:name=".ShareTextActivity"
+            android:label="Hopboard"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:theme="@style/TextSendTheme">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.PROCESS_TEXT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+        <activity
+            android:name=".SendClipboardActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:theme="@style/TextSendTheme" />
+        <service
+            android:name=".SendTileService"
+            android:exported="true"
+            android:label="Send to PC"
+            android:icon="@drawable/ic_tile_send"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+        <service
+            android:name=".BackgroundService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

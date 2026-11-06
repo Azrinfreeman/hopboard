@@ -54,10 +54,15 @@ class _ClipboardOperationCancelled extends SessionException {
 
 enum _ClipboardProtection {
   none,
+  // The app left the screen with nothing unsent; cleared on return if the
+  // clipboard did not change meanwhile.
+  away,
   startupText,
   localCopy,
   offlineCopy,
   privateCopy,
+  // Pairing material copied from Hopboard; never replaced by incoming items.
+  invitation,
   publication,
   conflict,
   unknown,
@@ -71,7 +76,10 @@ class AppController extends ChangeNotifier {
     required this.discovery,
     required this.preferences,
     UpdateService? updates,
+    // Lets tests exercise phone behaviour on a desktop machine.
+    this.mobileOverride,
   }) : updates = updates ?? UpdateService();
+  final bool? mobileOverride;
   final UpdateService updates;
   String? newerVersion, hostUpdateNotice;
   bool updateDismissed = false, updateBusy = false;
@@ -92,6 +100,11 @@ class AppController extends ChangeNotifier {
   bool automatic = false;
   bool automaticImages = false;
   bool automaticFiles = false;
+
+  /// Two-way "newest copy wins": a live copy from another device always
+  /// replaces this clipboard, discarding an unsent or conflicting local copy.
+  /// Pairing invitations stay protected.
+  bool newestWins = true;
   bool packagingFiles = false;
   Future<File>? _zipPreparation;
   bool _clearingFiles = false;
@@ -112,7 +125,24 @@ class AppController extends ChangeNotifier {
   bool paused = false;
   bool keepScreenAwake = false;
   bool foreground = true;
+  // Opt-in: keep receiving text while the app is not in front (Android).
+  bool backgroundReceive = false;
+  // The newest item this device has already shown, so reopening the app does
+  // not write an old item over a newer local copy.
+  String? _lastSeenItemId;
+  bool _returnedFromAway = false;
+  bool _keptSessionInBackground = false;
+  bool _serviceRunning = false, _servicePaused = false;
+  String? _serviceHost;
+  bool _wroteInBackground = false;
+  String? _lastWrittenText;
+  int _baselineRetries = 0;
+  Timer? _baselineRetry;
+  // Clipboard change stamp (never contents) after our last write or when the
+  // app was last in front; lets a background write spare a newer local copy.
+  int? _backgroundStamp;
   bool _disposed = false;
+  bool _externalSending = false;
   bool _connecting = false;
   bool _awaitingSnapshot = true;
   _ClipboardProtection _protection = _ClipboardProtection.unknown;
@@ -149,6 +179,13 @@ class AppController extends ChangeNotifier {
   PairRequest? pendingPair;
   ClipItem? item;
   String itemStatus = 'No text shared yet';
+  // Presentation follows the confirmed write status; inbox availability alone
+  // never means that the operating-system clipboard is ready.
+  bool get textReadyToPaste =>
+      sharing &&
+      item?.payload.isText == true &&
+      !item!.expired &&
+      itemStatus == 'Ready to paste';
   ClipboardSnapshot? conflictPayload;
   String? get conflictText => conflictPayload?.text;
   set conflictText(String? value) =>
@@ -172,6 +209,12 @@ class AppController extends ChangeNotifier {
   StreamSubscription<void>? _clipboardSub;
   StreamSubscription<List<String>>? _fileDropSub;
   StreamSubscription<String>? _actionSub;
+  StreamSubscription<String>? _virtualSub;
+
+  /// Item whose files are on this clipboard as virtual (streamed) files.
+  String? _virtualId;
+  final Map<int, int> _virtualReported = {};
+  final Map<int, DateTime> _virtualReportedAt = {};
   Timer? _reconnect;
   Timer? _coalesce;
   Timer? _retry;
@@ -182,9 +225,16 @@ class AppController extends ChangeNotifier {
   Future<void> _application = Future.value();
 
   bool get hosting => host != null;
-  bool get sharing => connected && !paused && foreground;
+  bool get sharing => connected && !paused && active;
   bool get sending => _pending != null;
-  bool get mobile => Platform.isIOS || Platform.isAndroid;
+  bool get mobile => mobileOverride ?? (Platform.isIOS || Platform.isAndroid);
+
+  /// A phone keeps its session while the app is hidden only when the user
+  /// turned on background receive and the phone is not hosting.
+  bool get _background => !foreground && backgroundReceive && mobile;
+  bool get active => foreground || _background || _externalSending;
+  bool get supportsBackgroundReceive =>
+      mobile && clipboard.supportsBackgroundReceive;
   bool get canAutomatic => clipboard.supportsAutomatic;
 
   static Future<AppController> load() async {
@@ -241,6 +291,9 @@ class AppController extends ChangeNotifier {
             ? 'iPhone'
             : 'Android phone');
     automatic = canAutomatic && (preferences.getBool('automatic') ?? false);
+    backgroundReceive =
+        supportsBackgroundReceive &&
+        (preferences.getBool('backgroundReceive') ?? false);
     fileLimit = (preferences.getInt('fileLimit') ?? defaultItemBytes).clamp(
       16 * 1024 * 1024,
       defaultItemBytes,
@@ -267,7 +320,9 @@ class AppController extends ChangeNotifier {
     automaticImages =
         clipboard.supportsImages &&
         (preferences.getBool('automaticImages') ?? false);
+    newestWins = preferences.getBool('newestWins') ?? true;
     _lastHostId = preferences.getString('lastHost');
+    clipboard.onSendText = sendExternalText;
     await clipboard.initialize();
     _fileDropSub = clipboard.fileDrops.stream.listen((paths) {
       unawaited(
@@ -276,6 +331,13 @@ class AppController extends ChangeNotifier {
         }),
       );
     });
+    _virtualSub = clipboard.virtualRequests.stream.listen((id) {
+      final current = item;
+      // An app started pasting; download now if not already under way.
+      if (current != null && current.id == id && _virtualId == id) {
+        unawaited(_streamFiles(current));
+      }
+    });
     _clipboardSub = clipboard.changes.stream.listen((_) {
       // Native compare-and-set protects writes until this event is classified.
       unawaited(_clipboardChanged());
@@ -283,6 +345,8 @@ class AppController extends ChangeNotifier {
     _actionSub = clipboard.actions.stream.listen((action) {
       if (action == 'pause') {
         unawaited(setPaused(!paused));
+      } else if (action == 'stopBackground') {
+        unawaited(setBackgroundReceive(false));
       } else if (action == 'quit') {
         unawaited(quit());
       } else if (action == 'networkChanged') {
@@ -323,6 +387,7 @@ class AppController extends ChangeNotifier {
         }),
       );
     }
+    await clipboard.readyForSendRequests();
     _notify();
   }
 
@@ -519,7 +584,7 @@ class AppController extends ChangeNotifier {
 
   Future<void> _connect() async {
     final saved = selectedHost;
-    if (saved == null || _connecting || !foreground || _disposed) return;
+    if (saved == null || _connecting || !active || _disposed) return;
     _connecting = true;
     final generation = ++_connectionGeneration;
     _reconnect?.cancel();
@@ -569,7 +634,7 @@ class AppController extends ChangeNotifier {
           }
           continue;
         }
-        if (generation != _connectionGeneration || !foreground) {
+        if (generation != _connectionGeneration || !active) {
           client.stop();
           return;
         }
@@ -578,6 +643,7 @@ class AppController extends ChangeNotifier {
         connected = true;
         _attempt = 0;
         status = 'Connected to ${saved.name}';
+        if (backgroundReceive) unawaited(_syncBackgroundService());
         unawaited(trust.save().catchError((Object _) {}));
         return;
       }
@@ -606,7 +672,7 @@ class AppController extends ChangeNotifier {
   }
 
   void _scheduleReconnect() {
-    if (selectedHost == null || !foreground || _disposed) return;
+    if (selectedHost == null || !active || _disposed) return;
     _reconnect?.cancel();
     const seconds = [1, 2, 4, 8, 15];
     final delay = seconds[_attempt.clamp(0, seconds.length - 1)];
@@ -624,7 +690,8 @@ class AppController extends ChangeNotifier {
     final connection = _connectionGeneration;
     _baselineReading = false;
     if (!canAutomatic || !foreground) {
-      _protect(_ClipboardProtection.unknown);
+      // A background session never reads the clipboard; keep what we know.
+      if (!_background) _protect(_ClipboardProtection.unknown);
       return;
     }
     _baselineReading = true;
@@ -638,7 +705,10 @@ class AppController extends ChangeNotifier {
       final snapshot = await clipboard.read();
       if (!valid()) return;
       final previous = _observedRevision;
-      if (previous != null && snapshot.revision != previous) {
+      // Our own background write moves the revision; that is not a local copy.
+      final ownBackground = _wroteInBackground && snapshot.ownWrite;
+      _wroteInBackground = false;
+      if (previous != null && snapshot.revision != previous && !ownBackground) {
         _localDirty = true;
         _protect(
           snapshot.sensitive
@@ -646,13 +716,19 @@ class AppController extends ChangeNotifier {
               : _ClipboardProtection.offlineCopy,
           revision: snapshot.revision,
         );
+      } else if (_protection == _ClipboardProtection.away &&
+          !_localDirty &&
+          !hasConflict) {
+        // Nothing changed while the app was away, so the clipboard is as we
+        // left it and a fresh remote item may replace it.
+        _protect(_ClipboardProtection.none, revision: snapshot.revision);
       } else if (!_localDirty &&
           !hasConflict &&
           _protection == _ClipboardProtection.unknown) {
-        // Only a first, successfully classified Windows text baseline can be
-        // replaced by a later live item. Never publish pre-existing content.
+        // Only a first, successfully classified text baseline (Windows or
+        // Android, where the clipboard can be read) can be replaced by a later
+        // live item. Never publish pre-existing content.
         final ordinaryText =
-            Platform.isWindows &&
             previous == null &&
             snapshot.text?.isNotEmpty == true &&
             !snapshot.sensitive &&
@@ -670,12 +746,25 @@ class AppController extends ChangeNotifier {
         );
       }
       _observedRevision = snapshot.revision;
-    } catch (_) {
+      _baselineRetries = 0;
+    } catch (failure) {
       if (valid() &&
           (_protection == _ClipboardProtection.none ||
               _protection == _ClipboardProtection.startupText ||
               _protection == _ClipboardProtection.unknown)) {
         _protect(_ClipboardProtection.unknown);
+      }
+      // Android refuses clipboard reads until the window has focus, which can
+      // be a moment after launch. Look again instead of waiting for a tap.
+      if (valid() &&
+          failure is PlatformException &&
+          failure.code == 'focus' &&
+          _baselineRetries < 20) {
+        _baselineRetries++;
+        _baselineRetry?.cancel();
+        _baselineRetry = Timer(const Duration(milliseconds: 500), () {
+          if (!_disposed && foreground) unawaited(_baseline());
+        });
       }
     } finally {
       if (baseline == _baselineGeneration) _baselineReading = false;
@@ -728,6 +817,7 @@ class AppController extends ChangeNotifier {
             break;
           }
           _cancelImageReceive();
+          _abandonVirtual();
           _receivedPng = null;
           _receivedId = null;
           _displayEpoch = epoch;
@@ -752,6 +842,16 @@ class AppController extends ChangeNotifier {
           } else {
             itemStatus = 'Available in app';
             _expire = Timer(current.remaining, () {
+              if (_virtualId == current.id) {
+                // The host no longer has the bytes; do not leave files on
+                // the clipboard that would fail to paste.
+                _virtualId = null;
+                unawaited(
+                  clipboard
+                      .clearVirtualFiles(current.id)
+                      .catchError((Object _) => false),
+                );
+              }
               if (item?.id == current.id) {
                 _cancelImageReceive();
                 _outgoingPng = null;
@@ -797,7 +897,16 @@ class AppController extends ChangeNotifier {
                   _protectionRevision == _observedRevision) {
                 _protect(_ClipboardProtection.none);
               }
-              if (_autoAccepts(current) &&
+              // Reopening the app replays the session's latest item. Skip one
+              // this device already showed, so it cannot cover a newer copy.
+              final staleReturn =
+                  initial && _returnedFromAway && current.id == _lastSeenItemId;
+              if (_background) {
+                _queueBackgroundApply(current, initial);
+              } else if (staleReturn) {
+                itemStatus =
+                    'Available in app. Waiting for the next shared copy.';
+              } else if (_autoAccepts(current) &&
                   !paused &&
                   foreground &&
                   !_localDirty &&
@@ -805,6 +914,9 @@ class AppController extends ChangeNotifier {
                   _pending == null &&
                   _candidate == null) {
                 _queueApply(current);
+              } else if (!initial && _replacesLocal(current)) {
+                _yieldToRemote();
+                _queueApply(current, replace: true);
               } else {
                 if (_localDirty || _pending != null || _candidate != null) {
                   conflictPayload ??= _candidate ?? _pending?.snapshot;
@@ -824,6 +936,8 @@ class AppController extends ChangeNotifier {
               }
             }
           }
+          if (current != null && !current.expired) _lastSeenItemId = current.id;
+          if (initial) _returnedFromAway = false;
           if (initial && _pending != null) unawaited(_retryPublication());
         case 'ack':
           if (_pending?.message['requestId'] == message['requestId']) {
@@ -890,6 +1004,14 @@ class AppController extends ChangeNotifier {
           }
           if (message['requestId'] == _pending?.message['requestId'] &&
               _pending != null) {
+            if (code == 'conflict' && _newestWinsActive) {
+              // A newer copy from another device won; it is (or will be)
+              // applied from the session state.
+              _cancelPublication(null);
+              _localDirty = false;
+              _protect(_ClipboardProtection.none);
+              break;
+            }
             if (code == 'conflict') {
               conflictPayload = _candidate ?? _pending!.snapshot;
               _protect(_ClipboardProtection.conflict);
@@ -920,6 +1042,13 @@ class AppController extends ChangeNotifier {
     _cancelClipboardCapture();
     _revision++;
     automatic = value && canAutomatic;
+    if (item?.payload.isText == true &&
+        (itemStatus == 'Ready to paste' ||
+            itemStatus == 'Automatic sharing is off. Copy to use this item.')) {
+      itemStatus = automatic
+          ? 'Available in app. Waiting for the next shared copy.'
+          : 'Automatic sharing is off. Copy to use this item.';
+    }
     await preferences.setBool('automatic', automatic);
     if (automatic) {
       await _baseline();
@@ -928,6 +1057,113 @@ class AppController extends ChangeNotifier {
       _cancelImageReceive();
     }
     _notify();
+  }
+
+  Future<void> setBackgroundReceive(bool value) async {
+    backgroundReceive = value && supportsBackgroundReceive;
+    await preferences.setBool('backgroundReceive', backgroundReceive);
+    _revision++;
+    if (!backgroundReceive && !foreground) {
+      // Switched off from the notification: fall back to foreground-only.
+      _keptSessionInBackground = false;
+      item = null;
+      _client?.stop();
+      connected = false;
+      _reconnect?.cancel();
+      _protect(_ClipboardProtection.localCopy);
+    }
+    await _syncBackgroundService();
+    _notify();
+  }
+
+  /// The service exists only to keep Android from stopping the process while
+  /// a joined phone waits for the next copy.
+  Future<void> _syncBackgroundService() async {
+    final wanted = backgroundReceive && !hosting && selectedHost != null;
+    // Android only lets an app start this service while it is in front, so
+    // call it again only when something changed.
+    if (wanted == _serviceRunning &&
+        (!wanted ||
+            (_serviceHost == selectedHost?.name && _servicePaused == paused))) {
+      return;
+    }
+    try {
+      await clipboard.setBackgroundService(
+        wanted,
+        hostName: selectedHost?.name,
+        paused: paused,
+      );
+      _serviceRunning = wanted;
+      _serviceHost = selectedHost?.name;
+      _servicePaused = paused;
+    } catch (error) {
+      backgroundReceive = false;
+      await preferences.setBool('backgroundReceive', false);
+      this.error = error is PlatformException && error.message != null
+          ? error.message
+          : 'Background receive could not start.';
+    }
+  }
+
+  /// Text only. Judges the phone clipboard by its change stamp, so it never
+  /// reads what the user copied. A newer local copy is kept and the item waits.
+  void _queueBackgroundApply(ClipItem current, bool initial) {
+    if (!current.payload.isText || !automatic || paused) return;
+    if (initial && current.id == _lastSeenItemId) return;
+    final guard = _revision;
+    final connection = _connectionGeneration;
+    bool valid() =>
+        !_disposed &&
+        _background &&
+        automatic &&
+        !paused &&
+        current.id == item?.id &&
+        !current.expired &&
+        guard == _revision &&
+        connection == _connectionGeneration;
+    _application = _application.then((_) async {
+      if (!valid()) return;
+      try {
+        final stamp = await clipboard.clipboardStamp();
+        if (!valid()) return;
+        if (stamp != null &&
+            _backgroundStamp != null &&
+            stamp != _backgroundStamp) {
+          itemStatus = 'A newer copy on this device was kept. Tap Copy to use this item.';
+          _receipt(current, 'needsAction');
+          unawaited(
+            clipboard
+                .notifyReceived(current.senderName, needsAction: true)
+                .catchError((Object _) {}),
+          );
+          _notify();
+          return;
+        }
+        final written = await clipboard.writeInBackground(current.text);
+        _backgroundStamp = written.stamp;
+        _observedRevision = written.revision;
+        _wroteInBackground = true;
+        if (!valid()) return;
+        itemStatus = 'Ready to paste';
+        _receipt(current, 'applied');
+        unawaited(
+          clipboard
+              .notifyReceived(current.senderName)
+              .catchError((Object _) {}),
+        );
+      } catch (_) {
+        if (!valid()) return;
+        itemStatus =
+            'Could not copy in the background. Open Hopboard and tap Copy.';
+        _receipt(current, 'needsAction');
+        unawaited(
+          clipboard
+              .notifyReceived(current.senderName, needsAction: true)
+              .catchError((Object _) {}),
+        );
+      }
+      _notify();
+    });
   }
 
   void _checkVersion(Object? version) {
@@ -989,18 +1225,56 @@ class AppController extends ChangeNotifier {
       (current.payload.isText ||
           automaticImages && current.payload.image != null ||
           automaticFiles &&
-              autoDownloadLimit > 0 &&
               current.kind == 'files' &&
-              current.payload.totalBytes <= autoDownloadLimit &&
-              current.payload.totalBytes <= fileLimit);
+              current.payload.totalBytes <= fileLimit &&
+              // Virtual files reach the clipboard at once and stream on
+              // paste; otherwise the whole item downloads first.
+              (clipboard.supportsVirtualFiles ||
+                  autoDownloadLimit > 0 &&
+                      current.payload.totalBytes <= autoDownloadLimit));
 
   Future<void> setPaused(bool value) async {
     paused = value;
+    if (backgroundReceive) unawaited(_syncBackgroundService());
+    if (item?.payload.isText == true &&
+        (itemStatus == 'Ready to paste' || itemStatus == 'Sharing paused')) {
+      itemStatus = paused
+          ? 'Sharing paused'
+          : 'Available in app. Waiting for the next shared copy.';
+    }
     _revision++;
     _cancelImageReceive();
     _cancelPublication(null);
     if (!paused) await _baseline();
     if (item != null) _receipt(item!, paused ? 'paused' : 'needsAction');
+    _notify();
+  }
+
+  /// Newest-wins is a desktop policy; phones keep their existing protection.
+  bool get _newestWinsActive => newestWins && automatic && !mobile;
+
+  /// Whether a live item from another device should overwrite local state.
+  bool _replacesLocal(ClipItem current) =>
+      _newestWinsActive &&
+      _autoAccepts(current) &&
+      !paused &&
+      foreground &&
+      !_baselineReading &&
+      _protection != _ClipboardProtection.invitation;
+
+  void _yieldToRemote() {
+    _cancelClipboardCapture();
+    _candidate = null;
+    _coalesce?.cancel();
+    if (_pending != null) _cancelPublication(null);
+    _localDirty = false;
+    conflictPayload = null;
+    _protect(_ClipboardProtection.none);
+  }
+
+  Future<void> setNewestWins(bool value) async {
+    newestWins = value;
+    await preferences.setBool('newestWins', value);
     _notify();
   }
 
@@ -1029,6 +1303,7 @@ class AppController extends ChangeNotifier {
       if (current.payload.totalBytes > fileLimit) {
         return 'Files exceed your item size limit.';
       }
+      if (clipboard.supportsVirtualFiles) return 'Copy to use these files.';
       return 'Above your automatic download limit. Download to use files.';
     }
     if (current.payload.image != null && !automaticImages) {
@@ -1074,7 +1349,9 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> _clipboardChanged() async {
-    if (_disposed || !automatic || paused || !foreground) return;
+    if (_disposed || _externalSending || !automatic || paused || !foreground) {
+      return;
+    }
     _captureUnresolved = true;
     final capture = ++_captureGeneration;
     if (_clipboardReading) {
@@ -1093,8 +1370,11 @@ class AppController extends ChangeNotifier {
     try {
       final snapshot = await _retryClipboard(
         () async => automaticImages || automaticFiles
-            ? await clipboard.readContent(includeImages: automaticImages)
-            : await clipboard.read(),
+            ? await clipboard.readContent(
+                includeImages: automaticImages,
+                includeRich: true,
+              )
+            : await clipboard.read(includeRich: true),
         valid,
       );
       _captureUnresolved = false;
@@ -1102,6 +1382,19 @@ class AppController extends ChangeNotifier {
       if (snapshot.revision == _observedRevision) return;
       _observedRevision = snapshot.revision;
       _clipboardNeedsReconcile = false;
+      // Android can report extra changes after our own write, without our
+      // marker (an emulator or keyboard re-sets the clip). Text identical to
+      // the item just received is that echo, not a new copy to publish.
+      final received = item;
+      if (mobile &&
+          received != null &&
+          received.senderId != identity.id &&
+          received.payload.isText &&
+          !snapshot.hasImage &&
+          !snapshot.hasFiles &&
+          snapshot.text == received.text) {
+        return;
+      }
       if (snapshot.ownWrite) return;
       _candidate = null;
       _coalesce?.cancel();
@@ -1171,7 +1464,8 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> _drainCandidate() async {
-    if (_captureUnresolved ||
+    if (_externalSending ||
+        _captureUnresolved ||
         _clipboardReading ||
         _pending != null ||
         _candidate == null ||
@@ -1204,6 +1498,93 @@ class AppController extends ChangeNotifier {
     await _sendSnapshot(snapshot, nativeRevision: snapshot.revision);
   }
 
+  /// A deliberate Android send. Shared text never reads or writes the clipboard;
+  /// the notification supplies a snapshot read once by a focused native window.
+  Future<void> sendExternalText(
+    ClipboardSnapshot snapshot,
+    bool sharedText,
+  ) async {
+    if (_externalSending || sending) {
+      throw SessionException('Waiting for the previous transfer.');
+    }
+    final text = validText(snapshot.text);
+    if (paused) throw SessionException('Resume sharing in Hopboard first.');
+    if (!sharedText &&
+        (snapshot.sensitive || snapshot.ownWrite || text == _lastWrittenText)) {
+      throw SessionException(
+        'Private or received text was not sent. Select text and use Share to send deliberately.',
+      );
+    }
+    _externalSending = true;
+    _cancelClipboardCapture();
+    try {
+      error = null;
+      if (!connected && !_connecting) {
+        final saved = selectedHost ?? trust.hosts[_lastHostId];
+        if (saved == null) {
+          throw SessionException('Open Hopboard and pair with your PC first.');
+        }
+        if (selectedHost == null) {
+          await joinSaved(saved);
+        } else {
+          await _connect();
+        }
+      }
+      final waiting = Stopwatch()..start();
+      while (_connecting || _awaitingSnapshot) {
+        if (_disposed || waiting.elapsed > const Duration(seconds: 10)) break;
+        if (!_connecting && !connected) break;
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+      }
+      if (!sharing || _awaitingSnapshot || _disposed) {
+        throw SessionException(
+          'PC unavailable. Open Hopboard to reconnect and try again.',
+        );
+      }
+      final previousId = item?.id;
+      if (!sharedText) _observedRevision = snapshot.revision;
+      await sendText(
+        text,
+        nativeRevision: sharedText ? null : snapshot.revision,
+      );
+      final delivery = Stopwatch()..start();
+      while (sending &&
+          !_disposed &&
+          delivery.elapsed < const Duration(seconds: 11)) {
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+      }
+      if (_disposed ||
+          sending ||
+          item?.id == previousId ||
+          item?.senderId != identity.id ||
+          item?.text != text ||
+          error != null) {
+        throw SessionException(
+          error ??
+              'Delivery is unconfirmed. Open Hopboard before trying again.',
+        );
+      }
+      if (!sharedText) {
+        // Use the stamp captured with the send, never a later copy's stamp.
+        // The next PC copy can replace acknowledged text but spares newer text.
+        _backgroundStamp = snapshot.changeStamp;
+      }
+    } catch (failure) {
+      showError(failure);
+      rethrow;
+    } finally {
+      _externalSending = false;
+      // A Share activity may be the only focused window. Keep its connection
+      // only for this explicit operation when background receive is disabled.
+      if (mobile && !foreground && !backgroundReceive) {
+        _reconnect?.cancel();
+        _client?.stop();
+        connected = false;
+        _notify();
+      }
+    }
+  }
+
   Future<void> sendText(
     String text, {
     bool automaticSend = false,
@@ -1232,11 +1613,19 @@ class AppController extends ChangeNotifier {
         : null;
     final content = snapshot.png == null
         ? null
-        : await ImageContent.create(snapshot.png!, text: snapshot.text);
+        : await ImageContent.create(
+            snapshot.png!,
+            text: snapshot.text,
+            html: snapshot.html,
+            rtf: snapshot.rtf,
+          );
     final payload =
         files?.payload ??
         content?.payload ??
-        ClipPayload.fromJson({'text': validText(snapshot.text)});
+        ClipPayload.fromJson({
+          'text': validText(snapshot.text),
+          ...richFields(snapshot.html, snapshot.rtf),
+        });
     if (generation != _connectionGeneration ||
         automaticSend && nativeRevision != _observedRevision) {
       return;
@@ -1305,7 +1694,12 @@ class AppController extends ChangeNotifier {
         await _client!.send(publication.message);
       }
     } on SessionException catch (failure) {
-      if ({'conflict', 'rate', 'request'}.contains(failure.code)) {
+      if (failure.code == 'conflict' && _newestWinsActive) {
+        _cancelPublication(null);
+        _localDirty = false;
+        _protect(_ClipboardProtection.none);
+        if (host != null) _message(host!.engine.snapshot());
+      } else if ({'conflict', 'rate', 'request'}.contains(failure.code)) {
         conflictPayload = publication.snapshot;
         _protect(_ClipboardProtection.conflict);
         _cancelPublication(failure.message);
@@ -1563,6 +1957,8 @@ class AppController extends ChangeNotifier {
             }
           },
           check: check,
+          entryProgress: (position, path, bytes, done) =>
+              _reportVirtual(current, position, path, bytes, done),
           markDownloaded: (path) async {
             await File('$path:Zone.Identifier')
                 .writeAsString('[ZoneTransfer]\r\nZoneId=3\r\n', flush: true);
@@ -1570,7 +1966,9 @@ class AppController extends ChangeNotifier {
           progress: (value) {
             if (imageProgress != value) {
               imageProgress = value;
-              itemStatus = 'Downloading files $value%';
+              itemStatus = _virtualId == current.id
+                  ? 'Ready to paste · downloading $value%'
+                  : 'Downloading files $value%';
               if (value == 100 || receiptClock.elapsedMilliseconds >= 500) {
                 _receipt(current, 'downloading', progress: value);
                 receiptClock.reset();
@@ -1592,6 +1990,14 @@ class AppController extends ChangeNotifier {
         );
         return result;
       } catch (failure) {
+        if (clipboard.supportsVirtualFiles) {
+          // Pastes waiting on these bytes fail instead of hanging.
+          unawaited(
+            clipboard
+                .virtualFileProgress(current.id, failed: true)
+                .catchError((Object _) {}),
+          );
+        }
         if (generation == _downloadGeneration && item?.id == current.id) {
           itemStatus = failure is SessionException
               ? failure.message
@@ -1761,6 +2167,170 @@ class AppController extends ChangeNotifier {
     return future;
   }
 
+  /// Puts received files on the clipboard immediately as virtual files.
+  /// Small items then download in the background and are upgraded to real
+  /// files; larger ones download when an app starts pasting them.
+  Future<void> _applyVirtual(
+    ClipItem current,
+    int expectedRevision,
+    bool Function() valid,
+  ) async {
+    final bool success;
+    try {
+      success = await _retryClipboard(
+        () => clipboard.writeVirtualFiles(
+          current.id,
+          current.payload.files!,
+          expectedRevision: expectedRevision,
+        ),
+        valid,
+      );
+    } on PlatformException catch (failure) {
+      if (failure.code == 'long' && valid()) {
+        // Paths too long for virtual files: download first, then paste.
+        try {
+          final files = await _ensureFiles(current);
+          if (!valid()) return;
+          if (await clipboard.writeFiles(
+            files.roots,
+            expectedRevision: _observedRevision,
+          )) {
+            final snapshot = await _readApplied(current);
+            _observedRevision = snapshot.revision;
+            itemStatus = 'Ready to paste';
+            _receipt(current, 'applied');
+            _notify();
+          }
+        } catch (_) {}
+        return;
+      }
+      rethrow;
+    }
+    if (!valid()) return;
+    if (!success) {
+      _protect(_ClipboardProtection.localCopy);
+      unawaited(_clipboardChanged());
+      itemStatus = 'Your local copy is protected. Copy to replace it.';
+      _receipt(current, 'needsAction');
+      _notify();
+      return;
+    }
+    _clipboardNeedsReconcile = true;
+    final snapshot = await _retryClipboard(clipboard.read, valid);
+    if (!snapshot.ownWrite) {
+      unawaited(_clipboardChanged());
+      itemStatus = 'Local clipboard changed';
+      _receipt(current, 'needsAction');
+      _notify();
+      return;
+    }
+    _observedRevision = snapshot.revision;
+    _clipboardNeedsReconcile = false;
+    _virtualId = current.id;
+    _virtualReported.clear();
+    _virtualReportedAt.clear();
+    itemStatus = 'Ready to paste';
+    _receipt(current, 'applied');
+    _notify();
+    unawaited(
+      clipboard
+          .notify(
+            'Clipboard replaced',
+            'Files from ${current.senderName} are ready to paste.',
+          )
+          .catchError((Object _) {}),
+    );
+    if (autoDownloadLimit > 0 &&
+        current.payload.totalBytes <= autoDownloadLimit) {
+      unawaited(_streamFiles(current));
+    }
+  }
+
+  /// Downloads the current virtual item, feeding pastes as bytes arrive, then
+  /// replaces the virtual files with the real ones for apps that need paths.
+  Future<void> _streamFiles(ClipItem current) async {
+    try {
+      final files = await _ensureFiles(current);
+      bool valid() =>
+          !_disposed && _virtualId == current.id && item?.id == current.id;
+      if (!valid()) return;
+      final upgraded = await _retryClipboard(
+        () => clipboard.writeFiles(
+          files.roots,
+          expectedRevision: _observedRevision,
+          replaceVirtual: current.id,
+        ),
+        valid,
+      );
+      if (!upgraded || !valid()) return;
+      _virtualId = null;
+      final snapshot = await _retryClipboard(
+        () => clipboard.readContent(includeImages: false),
+        () => !_disposed && item?.id == current.id,
+      );
+      if (_matches(snapshot, current)) {
+        _observedRevision = snapshot.revision;
+        _cacheRevisions[files] = snapshot.revision;
+      }
+      if (item?.id == current.id) {
+        itemStatus = 'Ready to paste';
+        _receipt(current, 'applied');
+        _notify();
+      }
+    } catch (_) {
+      // _ensureFiles reports the failure to readers and in the status line.
+    }
+  }
+
+  void _reportVirtual(
+    ClipItem current,
+    int position,
+    String path,
+    int bytes,
+    bool done,
+  ) {
+    if (!clipboard.supportsVirtualFiles || _virtualId != current.id) return;
+    final last = _virtualReported[position];
+    final at = _virtualReportedAt[position];
+    // Throttle to about one call per MiB, but report at least every second so
+    // a slow transfer is never mistaken for a stall; always report starts and
+    // ends.
+    if (!done &&
+        last != null &&
+        bytes != 0 &&
+        bytes - last < 1024 * 1024 &&
+        at != null &&
+        DateTime.now().difference(at) < const Duration(seconds: 1)) {
+      return;
+    }
+    _virtualReported[position] = bytes;
+    _virtualReportedAt[position] = DateTime.now();
+    unawaited(
+      clipboard
+          .virtualFileProgress(
+            current.id,
+            entry: position,
+            path: path,
+            available: bytes,
+            done: done,
+          )
+          .catchError((Object _) {}),
+    );
+  }
+
+  /// A newer session item replaced the one whose virtual files may still be
+  /// on the clipboard. Unless they finished downloading, make pastes fail
+  /// fast instead of waiting for bytes that will no longer arrive.
+  void _abandonVirtual() {
+    final id = _virtualId;
+    if (id == null) return;
+    _virtualId = null;
+    if (filesReady && _receivedFilesId == id) return;
+    unawaited(
+      clipboard.virtualFileProgress(id, failed: true).catchError((Object _) {}),
+    );
+  }
+
   Future<bool> _writeItem(
     ClipItem current,
     int? expectedRevision,
@@ -1772,6 +2342,8 @@ class AppController extends ChangeNotifier {
       return clipboard.writeImage(
         bytes,
         text: current.payload.text,
+        html: current.payload.html,
+        rtf: current.payload.rtf,
         expectedRevision: expectedRevision,
       );
     }
@@ -1784,7 +2356,12 @@ class AppController extends ChangeNotifier {
       );
     }
     if (!valid()) throw _ClipboardOperationCancelled();
-    return clipboard.write(current.text, expectedRevision: expectedRevision);
+    return clipboard.write(
+      current.text,
+      expectedRevision: expectedRevision,
+      html: current.payload.html,
+      rtf: current.payload.rtf,
+    );
   }
 
   Future<ClipboardSnapshot> _readApplied(ClipItem current) async {
@@ -1801,8 +2378,19 @@ class AppController extends ChangeNotifier {
     return snapshot;
   }
 
+  // A phone can report its own write as an unmarked change (see
+  // _clipboardChanged); identical text then still confirms the write.
+  bool _isReceivedTextEcho(ClipboardSnapshot snapshot, ClipItem current) =>
+      mobile &&
+      current.payload.isText &&
+      current.payload.image == null &&
+      current.kind != 'files' &&
+      !snapshot.hasImage &&
+      !snapshot.hasFiles &&
+      snapshot.text == current.text;
+
   bool _matches(ClipboardSnapshot snapshot, ClipItem current) =>
-      snapshot.ownWrite &&
+      (snapshot.ownWrite || _isReceivedTextEcho(snapshot, current)) &&
       (current.kind != 'files' ||
           listEquals(snapshot.filePaths, _receivedFiles?.roots)) &&
       (current.payload.text == null || snapshot.text == current.text) &&
@@ -1845,7 +2433,7 @@ class AppController extends ChangeNotifier {
     }
   }
 
-  void _queueApply(ClipItem current) {
+  void _queueApply(ClipItem current, {bool replace = false}) {
     final guard = _revision;
     final connection = _connectionGeneration;
     bool valid() =>
@@ -1856,16 +2444,30 @@ class AppController extends ChangeNotifier {
         !current.expired &&
         guard == _revision &&
         connection == _connectionGeneration &&
-        !_localDirty &&
-        !_resumeGuard;
+        (replace || !_localDirty && !_resumeGuard);
     _application = _application
         .then((_) async {
           if (!valid()) return;
+          if (replace) {
+            // Newest copy wins: adopt whatever is on the clipboard now as the
+            // expected revision, so the compare-and-set write only loses to a
+            // local copy made after this item arrived.
+            final snapshot = await _retryClipboard(clipboard.read, valid);
+            if (!valid()) return;
+            _observedRevision = snapshot.revision;
+            _clipboardNeedsReconcile = false;
+          }
           // A previous write may have succeeded while confirmation stayed busy.
           // Only a known Hopboard write may advance the expected revision here.
           if (_clipboardNeedsReconcile) {
             final snapshot = await _retryClipboard(clipboard.read, valid);
-            if (!snapshot.ownWrite) {
+            final echoOfLastWrite =
+                mobile &&
+                !snapshot.hasImage &&
+                !snapshot.hasFiles &&
+                snapshot.text != null &&
+                snapshot.text == _lastWrittenText;
+            if (!snapshot.ownWrite && !echoOfLastWrite) {
               unawaited(_clipboardChanged());
               itemStatus = 'Your local copy is protected. Copy to replace it.';
               _receipt(current, 'needsAction');
@@ -1877,6 +2479,12 @@ class AppController extends ChangeNotifier {
           }
           final expectedRevision = _observedRevision;
           if (expectedRevision == null) return;
+          if (current.kind == 'files' &&
+              clipboard.supportsVirtualFiles &&
+              !(filesReady && _receivedFilesId == current.id)) {
+            await _applyVirtual(current, expectedRevision, valid);
+            return;
+          }
           if (current.kind == 'files') {
             try {
               await _ensureFiles(current);
@@ -1921,6 +2529,7 @@ class AppController extends ChangeNotifier {
               return;
             }
             wrote = true;
+            _lastWrittenText = current.payload.isText ? current.text : null;
             _clipboardNeedsReconcile = true;
             final snapshot = await _retryClipboard(
               () => _readApplied(current),
@@ -2078,7 +2687,7 @@ class AppController extends ChangeNotifier {
     _revision++;
     _cancelImageReceive();
     _cancelPublication(null);
-    _protect(_ClipboardProtection.privateCopy);
+    _protect(_ClipboardProtection.invitation);
     _localDirty = true;
     if (!await clipboard.write(text)) {
       throw SessionException('Could not copy the invitation. Try again.');
@@ -2111,12 +2720,43 @@ class AppController extends ChangeNotifier {
     if (!mobile || foreground == value) return;
     foreground = value;
     _revision++;
-    if (!value) {
+    final cleanClipboard =
+        _protection == _ClipboardProtection.none &&
+        !_localDirty &&
+        _pending == null &&
+        _candidate == null &&
+        !_baselineReading &&
+        _observedRevision != null;
+    if (!value && backgroundReceive && !hosting && selectedHost != null) {
+      // Keep the session. The clipboard cannot be read from here on, so a
+      // write later is judged by its change stamp, never by its contents.
+      _keptSessionInBackground = true;
+      _cancelPublication(null);
+      _cancelClipboardCapture();
+      _baselineGeneration++;
+      _baselineReading = false;
+      _protect(
+        cleanClipboard
+            ? _ClipboardProtection.away
+            : _ClipboardProtection.localCopy,
+      );
+      pendingPair?.decide(false);
+      invitation = null;
+      _backgroundStamp = await clipboard.clipboardStamp();
+      await clipboard.keepAwake(false);
+      keepScreenAwake = false;
+      if (!connected && !_connecting) _scheduleReconnect();
+    } else if (!value) {
+      _keptSessionInBackground = false;
       item = null;
       _expire?.cancel();
       _cancelPublication(null);
       _reconnect?.cancel();
-      _protect(_ClipboardProtection.localCopy);
+      _protect(
+        cleanClipboard
+            ? _ClipboardProtection.away
+            : _ClipboardProtection.localCopy,
+      );
       pendingPair?.decide(false);
       invitation = null;
       _client?.stop();
@@ -2134,8 +2774,16 @@ class AppController extends ChangeNotifier {
       try {
         await discovery.start();
       } catch (_) {}
-      _connecting = false;
-      await _connect();
+      _returnedFromAway = _protection == _ClipboardProtection.away;
+      if (_keptSessionInBackground && connected && _client != null) {
+        // Still connected: only the clipboard needs checking again.
+        _keptSessionInBackground = false;
+        await _baseline();
+      } else {
+        _keptSessionInBackground = false;
+        _connecting = false;
+        await _connect();
+      }
     }
     _notify();
   }
@@ -2149,7 +2797,7 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> _networkChanged() async {
-    if (!foreground || _rebindBusy) return;
+    if (!active || _rebindBusy) return;
     _rebindBusy = true;
     try {
       final before = {for (final i in interfaces) i.address};
@@ -2244,6 +2892,11 @@ class AppController extends ChangeNotifier {
     await clipboard.keepAwake(false);
     keepScreenAwake = false;
     connected = false;
+    _keptSessionInBackground = false;
+    if (_serviceRunning) {
+      _serviceRunning = false;
+      await clipboard.setBackgroundService(false).catchError((Object _) {});
+    }
     invitation = null;
     pendingPair?.decide(false);
     pendingPair = null;
@@ -2284,11 +2937,13 @@ class AppController extends ChangeNotifier {
     _reconnect?.cancel();
     _coalesce?.cancel();
     _retry?.cancel();
+    _baselineRetry?.cancel();
     _expire?.cancel();
     _networkTimer?.cancel();
     unawaited(_clipboardSub?.cancel());
     unawaited(_fileDropSub?.cancel());
     unawaited(_actionSub?.cancel());
+    unawaited(_virtualSub?.cancel());
     unawaited(_sessionSub?.cancel());
     unawaited(_pairSub?.cancel());
     _client?.stop();

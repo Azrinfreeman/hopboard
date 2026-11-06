@@ -1222,7 +1222,7 @@ class _ClipboardHomeState extends State<ClipboardHome>
             ),
             subtitle: Text(
               Platform.isWindows
-                  ? 'Copy text in any app. Your connected devices receive it automatically.'
+                  ? 'Enable on both PCs. Copy text on one, then press Ctrl+V in another app on the other PC.'
                   : 'Sync clipboard changes while Hopboard is open and focused.',
               style: TextStyle(
                 fontSize: 13,
@@ -1234,7 +1234,66 @@ class _ClipboardHomeState extends State<ClipboardHome>
           ),
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
         ),
+      if (app.canAutomatic && !app.mobile) ...[
+        const SizedBox(height: 20),
+        _card(
+          SwitchListTile.adaptive(
+            contentPadding: EdgeInsets.zero,
+            title: const Text(
+              'Newest copy always wins',
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+            ),
+            subtitle: Text(
+              app.newestWins
+                  ? 'A copy from another device replaces this clipboard, even over a local copy that was not sent.'
+                  : 'Local copies that were not sent are kept until you click Copy.',
+              style: TextStyle(
+                fontSize: 13,
+                color: _Palette.of(context).secondary,
+              ),
+            ),
+            value: app.newestWins,
+            onChanged: app.automatic
+                ? (value) => _run(() => app.setNewestWins(value))
+                : null,
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
+        ),
+      ],
       const SizedBox(height: 20),
+      if (app.supportsBackgroundReceive) ...[
+        _card(
+          SwitchListTile.adaptive(
+            contentPadding: EdgeInsets.zero,
+            title: const Text(
+              'Receive in the background',
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+            ),
+            subtitle: Text(
+              app.automatic
+                  ? 'Copies from your computer reach this phone\'s clipboard while Hopboard is closed or the screen is off. Shows a notification while connected.'
+                  : 'Turn on automatic clipboard sharing first.',
+              style: TextStyle(
+                fontSize: 13,
+                color: _Palette.of(context).secondary,
+              ),
+            ),
+            value: app.backgroundReceive,
+            onChanged: app.automatic ? _backgroundReceive : null,
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
+        ),
+        if (app.backgroundReceive)
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: _addSendTile,
+              icon: const Icon(Icons.add_to_home_screen_rounded),
+              label: const Text('Add "Send to PC" tile'),
+            ),
+          ),
+        const SizedBox(height: 20),
+      ],
       if (app.clipboard.supportsImages) ...[
         _card(
           SwitchListTile.adaptive(
@@ -1286,14 +1345,25 @@ class _ClipboardHomeState extends State<ClipboardHome>
                     ? app.autoDownloadLimit
                     : null,
                 hint: const Text('Auto-download'),
+                // With virtual files every item is pasteable at once; this
+                // limit only decides what downloads before a paste asks.
                 items:
-                    {
-                          0: 'Download manually',
-                          16: 'Auto-download to 16 MiB',
-                          64: 'Auto-download to 64 MiB',
-                          256: 'Auto-download to 256 MiB',
-                          1024: 'Auto-download to 1 GiB',
-                        }.entries
+                    (app.clipboard.supportsVirtualFiles
+                            ? {
+                                0: 'Download when pasted',
+                                16: 'Prefetch up to 16 MiB',
+                                64: 'Prefetch up to 64 MiB',
+                                256: 'Prefetch up to 256 MiB',
+                                1024: 'Prefetch up to 1 GiB',
+                              }
+                            : {
+                                0: 'Download manually',
+                                16: 'Auto-download to 16 MiB',
+                                64: 'Auto-download to 64 MiB',
+                                256: 'Auto-download to 256 MiB',
+                                1024: 'Auto-download to 1 GiB',
+                              })
+                        .entries
                         .map(
                           (e) => DropdownMenuItem(
                             value: e.key * 1024 * 1024,
@@ -1478,12 +1548,23 @@ class _ClipboardHomeState extends State<ClipboardHome>
                 runSpacing: 12,
                 children: [
                   Text(
-                    app.itemStatus,
+                    Platform.isWindows && app.textReadyToPaste
+                        ? 'Ready to paste — press Ctrl+V in another app'
+                        : app.itemStatus,
                     style: TextStyle(
                       fontSize: 13,
                       color: _Palette.of(context).secondary,
                     ),
                   ),
+                  if (Platform.isWindows &&
+                      app.canAutomatic &&
+                      !app.automatic &&
+                      app.item != null &&
+                      app.item?.senderId != app.identity.id)
+                    OutlinedButton(
+                      onPressed: () => _automatic(true),
+                      child: const Text('Enable automatic sharing'),
+                    ),
                   if (app.filesReady)
                     OutlinedButton(
                       onPressed: () => _run(app.showReceivedFolder),
@@ -1494,23 +1575,34 @@ class _ClipboardHomeState extends State<ClipboardHome>
                       onPressed: app.cancelFileDownload,
                       child: const Text('Cancel'),
                     ),
-                  FilledButton.icon(
-                    onPressed:
-                        app.item == null ||
-                            app.paused ||
-                            app.imageProgress != null
-                        ? null
-                        : () => _run(app.copyReceived),
-                    icon: const Icon(Icons.copy_rounded, size: 17),
-                    label: Text(
-                      app.item?.kind == 'files'
-                          ? (app.needsFileDownload ? 'Download' : 'Copy files')
-                          : app.item?.kind == 'image' ||
-                                app.itemStatus.contains('image needs attention')
-                          ? 'Copy image'
-                          : 'Copy',
+                  if (Platform.isWindows && app.textReadyToPaste)
+                    OutlinedButton.icon(
+                      onPressed: () => _run(app.copyReceived),
+                      icon: const Icon(Icons.copy_rounded, size: 17),
+                      label: const Text('Copy again'),
+                    )
+                  else
+                    FilledButton.icon(
+                      onPressed:
+                          app.item == null ||
+                              app.paused ||
+                              app.imageProgress != null
+                          ? null
+                          : () => _run(app.copyReceived),
+                      icon: const Icon(Icons.copy_rounded, size: 17),
+                      label: Text(
+                        app.item?.kind == 'files'
+                            ? (app.needsFileDownload
+                                  ? 'Download'
+                                  : 'Copy files')
+                            : app.item?.kind == 'image' ||
+                                  app.itemStatus.contains(
+                                    'image needs attention',
+                                  )
+                            ? 'Copy image'
+                            : 'Copy',
+                      ),
                     ),
-                  ),
                 ],
               ),
               if (app.hasConflict) ...[
@@ -2009,8 +2101,10 @@ class _ClipboardHomeState extends State<ClipboardHome>
         builder: (context) => AlertDialog(
           scrollable: true,
           title: const Text('Enable automatic sharing?'),
-          content: const Text(
-            'New text you copy will be sent to every trusted member of this session. Incoming text can replace your clipboard. Pause sharing before copying anything private.',
+          content: Text(
+            '${Platform.isWindows ? 'Everything you copy (text, images, files and folders) is sent to every trusted member of this session, and copies from them are placed on your clipboard automatically. Large files paste while they stream. ' : 'New text you copy will be sent to every trusted member of this session. Incoming text can replace your clipboard. '}'
+            '${Platform.isWindows ? 'Enable this on every PC. Then just press Ctrl+V; there is no need to click Copy in Hopboard. ' : ''}'
+            'Copies that password managers mark as private are never sent. Pause sharing before copying anything else private.',
           ),
           actions: [
             TextButton(
@@ -2026,14 +2120,51 @@ class _ClipboardHomeState extends State<ClipboardHome>
       );
       if (consent != true) return;
     }
-    await _run(() => app.setAutomatic(enabled));
+    await _run(() async {
+      await app.setAutomatic(enabled);
+      // One consent covers every kind; the per-kind switches stay as overrides.
+      if (enabled && app.automatic) {
+        if (app.clipboard.supportsImages) await app.setAutomaticImages(true);
+        if (app.clipboard.supportsFiles) await app.setAutomaticFiles(true);
+      }
+    });
+  }
+
+  Future<void> _addSendTile() async {
+    final code = await app.clipboard.requestSendTile();
+    if (!mounted) return;
+    final message = switch (code) {
+      2 => 'Tile added. Pull down the notification shade to use it.',
+      1 => 'The tile is already in your Quick Settings.',
+      0 => 'The tile was not added.',
+      _ => 'Open Quick Settings, tap the pencil (edit) and drag "Send to PC" into the panel.',
+    };
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _backgroundReceive(bool enabled) async {
+    if (enabled &&
+        !await _confirmChange(
+          'Receive in the background?',
+          'Hopboard stays connected to your computer and shows a notification while it does. '
+              'Text you copy on the computer replaces this phone\'s clipboard without opening the app, '
+              'unless you copied something newer on this phone. The notification never shows the text. '
+              'It uses some battery. Xiaomi and some other phones may also need battery restrictions turned off for Hopboard in Settings.',
+          'Turn on',
+        )) {
+      return;
+    }
+    await _run(() => app.setBackgroundReceive(enabled));
   }
 
   Future<void> _automaticFiles(bool enabled) async {
     if (enabled &&
         !await _confirmChange(
           'Share files automatically?',
-          'Copied files and folders will be sent to trusted members. Received files download to this PC and can replace your clipboard, within your auto-download limit. Larger items wait for Download. Use Copy, not Cut.',
+          app.clipboard.supportsVirtualFiles
+              ? 'Copied files and folders will be sent to trusted members. Received files replace your clipboard at once and download while you paste them; smaller ones download ahead. Pasting in Explorer works for any size; some apps can paste only after the download finishes. Use Copy, not Cut.'
+              : 'Copied files and folders will be sent to trusted members. Received files download to this PC and can replace your clipboard, within your auto-download limit. Larger items wait for Download. Use Copy, not Cut.',
           'Enable files',
         )) {
       return;

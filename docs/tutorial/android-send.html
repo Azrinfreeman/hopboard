@@ -1,0 +1,65 @@
+<!doctype html><html lang='en'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Send Android text to your PC — Hopboard</title><style>body{margin:2rem auto;padding:0 1.5rem;max-width:54rem;color:#202124;background:white;font:17px/1.65 system-ui,sans-serif}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit}a{color:#174b87}@media print{body{margin:0;font-size:11pt}pre{white-space:pre-wrap}}</style><main><p>Plain-text edition · <a href='android-send.md'>Editable Markdown source</a></p><pre># Send Android text to your PC
+
+Hopboard offers Share and a notification button for sending text from other Android apps. Pair the tablet with your Windows host on the same local network first, approve it on the PC, and resume sharing on both devices. Windows Automatic clipboard sharing must be on if you want received text placed on its clipboard automatically.
+
+## Use it
+
+Select text in another app and choose **Share, then Hopboard**. Apps that expose Android&#x27;s text-selection actions may also show **Hopboard** directly in that menu. This sends the selected text and leaves your clipboard alone. If Hopboard was closed, it opens and reconnects to the last PC. Success returns to your previous app; an unpaired device opens Hopboard so you can pair and share again.
+
+For text you already copied, enable **Background receive** in Hopboard and allow its notifications. Expand the Hopboard connection notification and tap **Send to PC**. A brief transparent screen reads the clipboard once and closes. It sends the current clipboard at tap time, so avoid copying something else before tapping. The button stays available because Android may withhold background clipboard-change callbacks.
+
+Both actions say **Sent to PC** after the host acknowledges the transfer. This confirms host acceptance; check the PC&#x27;s status if paste does not work. Notifications and result messages never display the copied text. Pause removes the Send to PC button and blocks sending; Stop removes the background notification. Share is an explicit action and can reconnect later. These deliberate sends work with the phone&#x27;s Automatic clipboard sharing switch off.
+
+## Quick Settings tile
+
+Turn on **Receive in the background**, then tap **Add &quot;Send to PC&quot; tile** under it. Android 13 and newer asks for one confirmation. On older versions, open Quick Settings, tap the pencil (edit), and drag **Send to PC** into the panel. After copying text anywhere, pull down the notification shade and tap the tile. It closes the shade, opens the same brief transparent reader as the notification button, sends the clipboard, and shows **Sent to PC**.
+
+The tile is active while Hopboard&#x27;s connection notification is showing. If it is dimmed, tapping it opens Hopboard instead. On a locked device Android asks you to unlock first. It has the same limits and checks as the notification button: sensitive clipboard content and text Hopboard just received are refused, and nothing is read until you tap.
+
+Files: `android/app/src/main/kotlin/dev/localclipboard/local_clipboard/SendTileService.kt` (tile behaviour and the Android 14 start-activity change), `android/app/src/main/res/drawable/ic_tile_send.xml` (icon, white only), the `SendTileService` entry in `AndroidManifest.xml`, and `requestSendTile` in `MainActivity.kt` for the add-tile prompt. To rename the tile, change `tile.label` in `SendTileService.kt` and the `android:label` in the manifest together.
+
+## Privacy and limits
+
+Text is limited to 64 KiB of UTF-8, including multibyte characters. Empty text and null characters are rejected. Images, files, formatted text and folders are not handled by these entries.
+
+The notification action refuses a clipboard marked sensitive by its source app and text Hopboard received from the PC. Selecting text and sharing it is a deliberate send, so it can send text you choose even if a password manager marked the clipboard private. Sensitivity flags depend on the source app; do not assume every app marks secrets.
+
+Android must be unlocked. The focused reader is not exported, so another app cannot launch it to read your clipboard. Shared text is passed in memory and is not queued for later delivery after a failure. Existing session expiry and pinned TLS apply.
+
+## Editable source and responsibilities
+
+- `android/app/src/main/AndroidManifest.xml`: Share and PROCESS_TEXT filters; exported Share entry and private notification reader.
+- `android/app/src/main/kotlin/dev/localclipboard/local_clipboard/TextSendActivity.kt`: intent validation, focused clipboard read, result messages and closing the transient window.
+- `android/app/src/main/kotlin/dev/localclipboard/local_clipboard/MainActivity.kt`: cold-start Share handoff and channel readiness. Consumes each intent once.
+- `android/app/src/main/kotlin/dev/localclipboard/local_clipboard/BackgroundService.kt`: persistent Send to PC action, Pause and Stop.
+- `android/app/src/main/res/values/styles.xml`: `TextSendTheme`, the focused translucent activity theme.
+- `lib/platform/clipboard_bridge.dart`: `sendExternalText` channel callback to the controller.
+- `lib/app/controller.dart`: `sendExternalText`, saved-host connection, validation, echo suppression and acknowledgement wait. It reuses the existing publication path.
+- `test/android_send_test.dart`: real loopback TLS and fake clipboard regression tests.
+
+For example, to rename the notification button to **Send copied text**, change its label in `BackgroundService.kt`, rebuild the APK, then expand the connection notification. Only the label changes; the private reader and delivery checks stay the same. Update this guide if you keep that wording. To change the text limit, inspect `validText` in `lib/core/protocol.dart` and `validateSendText` in `TextSendActivity.kt` together; raising only one limit breaks validation consistency.
+
+## Build and verify
+
+Use the installed project Flutter SDK (`D:/flutter-3.47.6/flutter` for this change), Android SDK 37.0 and Android Studio&#x27;s JBR. Existing dependencies are sufficient. From the repository root:
+
+```powershell
+flutter test test/android_send_test.dart --no-pub
+flutter test --no-pub --exclude-tags large
+dart analyze --format machine lib test
+```
+
+Follow [release signing](release-signing.md) to select your existing private signing properties and build the ARM64 APK. Keep the same package and release key so the tablet can update without losing its pairing. The authoritative version is `pubspec.yaml`; the emulator may use an additional x86_64 build. See [VALIDATION.md](../../VALIDATION.md#android-explicit-send-d20-5-november-2026) for actual results, tool limitations and the candidate location. This session used direct Dart analysis because the `flutter analyze` wrapper stalled.
+
+On the tablet, test Share from Chrome and Notes, the selection-menu entry where supported, Send to PC after copying elsewhere, private text, PC-to-tablet echo suppression, an unreachable PC, Pause and Stop. Record results in [the device checklist](../testing/device-test-checklist.md). App-specific Share menus and Xiaomi background restrictions still require real-device verification.
+
+## Troubleshooting
+
+If the connection notification is absent, open Hopboard, connect to the PC, enable Background receive and allow notifications. If sending says the PC is unavailable, reconnect in Hopboard and share again. A delivery-unconfirmed message is not proof of failure; check the PC before retrying. The text is not silently held for a later send.
+
+## Result of the D21 callback test (5 November 2026)
+
+On the Xiaomi tablet the test counted **0 background signals** in every run. Android does not tell Hopboard about copies made while it is hidden, so an overlay-based automatic send has no trigger to start from. D21 was dropped. Share, the notification button and the tile are the supported ways to send from Android. The diagnostic was removed afterwards (rc.7) and is no longer in the app.
+
+This Markdown file is the editable source. The adjacent HTML is a printable plain-text companion export. Regenerate it with `python tools/export_android_send_guide.py` from the repository root after editing. No PDF is required to use or maintain this feature.
+</pre></main></html>

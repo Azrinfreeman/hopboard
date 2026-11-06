@@ -44,6 +44,7 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+/android/build/
 /android/.kotlin/
 
 # Widget Preview related
@@ -51,6 +52,12 @@ app.*.map.json
 
 # Project-local build tools and packaged outputs.
 /.tools/
+# Android release credentials must never be committed.
+/android/key.properties
+*.jks
+*.keystore
+*.p12
+*.pfx
 /dist/*
 !/dist/Hopboard-Setup-0.1.2-x64.exe
 !/dist/Hopboard-Setup-0.1.2-x64.exe.sha256

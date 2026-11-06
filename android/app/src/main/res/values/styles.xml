@@ -1,5 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- Focusable: clipboard access follows an explicit notification tap. -->
+    <style name="TextSendTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowDisablePreview">true</item>
+        <item name="android:windowActionModeOverlay">true</item>
+    </style>
     <!-- Theme applied to the Android Window while the process is starting when the OS's Dark Mode setting is off -->
     <style name="LaunchTheme" parent="@android:style/Theme.Light.NoTitleBar">
         <!-- Show a splash screen on the activity. Automatically removed when

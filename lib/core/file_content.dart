@@ -148,6 +148,10 @@ class ReceivedFiles {
     required void Function() check,
     Future<void> Function(String)? markDownloaded,
     void Function(int)? progress,
+    // Per-entry state for streaming readers: manifest list position, where
+    // the bytes are now, how many are written, and whether it is complete.
+    void Function(int position, String path, int bytes, bool done)?
+    entryProgress,
   }) async {
     // Revalidate callers too, before creating anything on disk.
     manifest = FileManifest.fromJson(manifest.toJson());
@@ -164,7 +168,8 @@ class ReceivedFiles {
     final staging = await cache.createTemp('partial-');
     var received = 0;
     try {
-      for (final entry in manifest.entries) {
+      for (var position = 0; position < manifest.entries.length; position++) {
+        final entry = manifest.entries[position];
         check();
         final destination =
             '${dir.path}${Platform.pathSeparator}${entry.path.replaceAll('/', Platform.pathSeparator)}';
@@ -184,6 +189,7 @@ class ReceivedFiles {
         }
         final output = await file.open(mode: FileMode.writeOnly);
         var length = 0;
+        entryProgress?.call(position, file.path, 0, false);
         try {
           await fetch(entry.index, (chunk) async {
             check();
@@ -193,6 +199,7 @@ class ReceivedFiles {
             }
             await output.writeFrom(chunk);
             received += chunk.length;
+            entryProgress?.call(position, file.path, length, false);
             progress?.call(
               manifest.totalBytes == 0
                   ? 100
@@ -207,6 +214,7 @@ class ReceivedFiles {
           await output.close();
         }
         await file.rename(destination);
+        entryProgress?.call(position, destination, entry.size, true);
         final completed = File(destination);
         await markDownloaded?.call(destination);
         if (entry.mtime != null) {

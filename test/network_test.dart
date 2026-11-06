@@ -203,26 +203,29 @@ void main() {
     expect(approvals, 1);
   });
 
-  test('unauthenticated sockets from one address cannot take every slot', () async {
-    final host = LocalHost(identity, TrustStore(MemoryVault()), 'Host');
-    await host.start('127.0.0.1', 0);
-    addTearDown(host.stop);
-    Future<SecureSocket> open() => SecureSocket.connect(
-      '127.0.0.1',
-      host.port,
-      onBadCertificate: (_) => true,
-    );
-    final idle = [for (var i = 0; i < 3; i++) await open()];
-    addTearDown(() {
-      for (final socket in idle) {
-        socket.destroy();
-      }
-    });
-    await Future<void>.delayed(const Duration(milliseconds: 200));
-    final extra = await open();
-    // Refused immediately, well before the five-second authentication limit.
-    await extra.drain<void>().timeout(const Duration(seconds: 2));
-  });
+  test(
+    'unauthenticated sockets from one address cannot take every slot',
+    () async {
+      final host = LocalHost(identity, TrustStore(MemoryVault()), 'Host');
+      await host.start('127.0.0.1', 0);
+      addTearDown(host.stop);
+      Future<SecureSocket> open() => SecureSocket.connect(
+        '127.0.0.1',
+        host.port,
+        onBadCertificate: (_) => true,
+      );
+      final idle = [for (var i = 0; i < 3; i++) await open()];
+      addTearDown(() {
+        for (final socket in idle) {
+          socket.destroy();
+        }
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      final extra = await open();
+      // Refused immediately, well before the five-second authentication limit.
+      await extra.drain<void>().timeout(const Duration(seconds: 2));
+    },
+  );
 
   test('real TLS proxy cannot relay code pairing through a substituted certificate', () async {
     final trust = TrustStore(MemoryVault());

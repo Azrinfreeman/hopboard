@@ -305,7 +305,7 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('protected and ready clipboard states keep Copy available', (
+  testWidgets('confirmed text offers paste guidance and optional Copy again', (
     tester,
   ) async {
     final app = await testController(Identity('Clipboard states', '', ''));
@@ -327,33 +327,135 @@ void main() {
       tester.platformDispatcher.clearAllTestValues();
     });
     tester.view.physicalSize = const Size(1440, 900);
-    await tester.pumpWidget(ClipboardApp(controller: app));
+    await tester.pumpWidget(
+      RepaintBoundary(
+        key: const ValueKey('dashboard-capture'),
+        child: ClipboardApp(controller: app),
+      ),
+    );
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('destination-1')));
-    for (final width in [1440.0, 390.0]) {
+    for (final (width, scale) in [(1440.0, 1.0), (390.0, 1.0), (390.0, 2.0)]) {
       tester.view.physicalSize = Size(width, 900);
+      tester.platformDispatcher.textScaleFactorTestValue = scale;
       for (final status in [
         'Your local copy is protected. Copy to replace it.',
         'Local copy made while sharing was inactive. Copy to replace it.',
         'Waiting for your local copy to finish sending.',
         'Clipboard could not be checked. Copy to try again.',
+        'Clipboard confirmation failed. Copy to try again.',
         'Available in app. Waiting for the next shared copy.',
         'Ready to paste',
       ]) {
         app.itemStatus = status;
         app.notifyListeners();
         await tester.pumpAndSettle();
-        expect(find.text(status), findsWidgets);
-        expect(
-          tester
-              .widget<FilledButton>(find.widgetWithText(FilledButton, 'Copy'))
-              .onPressed,
-          isNotNull,
-        );
+        if (status == 'Ready to paste') {
+          expect(
+            find.text('Ready to paste — press Ctrl+V in another app'),
+            findsOneWidget,
+          );
+          expect(find.widgetWithText(FilledButton, 'Copy'), findsNothing);
+          expect(
+            tester
+                .widget<OutlinedButton>(
+                  find.widgetWithText(OutlinedButton, 'Copy again'),
+                )
+                .onPressed,
+            isNotNull,
+          );
+          await tester.ensureVisible(find.text('Copy again'));
+          await tester.pumpAndSettle();
+          await _captureDashboard(
+            tester,
+            'paste-ready-${width.toInt()}-$scale',
+          );
+        } else {
+          expect(find.text(status), findsWidgets);
+          expect(find.text('Copy again'), findsNothing);
+          expect(
+            tester
+                .widget<FilledButton>(find.widgetWithText(FilledButton, 'Copy'))
+                .onPressed,
+            isNotNull,
+          );
+        }
         expect(tester.takeException(), isNull);
       }
     }
     expect((app.clipboard as FakeClipboard).writes, 0);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('received text offers one-time sharing consent without copying', (
+    tester,
+  ) async {
+    final app = await testController(
+      Identity('receiver', '', ''),
+      automatic: false,
+    );
+    app.host = _PreviewHost();
+    app.connected = true;
+    app.item = ClipItem(
+      id: 'setup',
+      sequence: 1,
+      senderId: 'peer',
+      senderName: 'Peer',
+      text: 'Waiting for one-time setup',
+      lifetime: const Duration(minutes: 5),
+    );
+    app.itemStatus = 'Automatic sharing is off. Copy to use this item.';
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 900);
+    tester.platformDispatcher.textScaleFactorTestValue = 2;
+    addTearDown(() {
+      app.dispose();
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+      tester.platformDispatcher.clearAllTestValues();
+    });
+    await tester.pumpWidget(
+      RepaintBoundary(
+        key: const ValueKey('dashboard-capture'),
+        child: ClipboardApp(controller: app),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Clipboard').last);
+    await tester.pumpAndSettle();
+    final enable = find.widgetWithText(
+      OutlinedButton,
+      'Enable automatic sharing',
+    );
+    await tester.ensureVisible(enable);
+    await tester.pumpAndSettle();
+    await _captureDashboard(tester, 'paste-setup-390-large');
+    await tester.tap(enable);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('both PCs'), findsWidgets);
+    expect(find.textContaining('every trusted member'), findsOneWidget);
+    await tester.ensureVisible(find.text('Cancel'));
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(app.automatic, isFalse);
+    expect((app.clipboard as FakeClipboard).writes, 0);
+    await tester.ensureVisible(enable);
+    // Activate the focused button from the keyboard too.
+    final buttonContext = tester.element(find.text('Enable automatic sharing'));
+    Focus.of(buttonContext).requestFocus();
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    expect(find.text('Enable automatic sharing?'), findsOneWidget);
+    await tester.ensureVisible(find.text('Enable sharing'));
+    await tester.tap(find.text('Enable sharing'));
+    await tester.pumpAndSettle();
+    expect(app.automatic, isTrue);
+    expect(app.preferences.getBool('automatic'), isTrue);
+    expect(enable, findsNothing);
+    expect((app.clipboard as FakeClipboard).writes, 0);
+    expect(find.text('Copy again'), findsNothing);
+    expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 

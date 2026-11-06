@@ -1,0 +1,8 @@
+# Copy to key.properties (ignored), or an external file selected by
+# HOPBOARD_ANDROID_KEY_PROPERTIES. Never commit the completed file.
+# Use forward slashes for Windows paths. Relative storeFile paths are resolved
+# against the directory containing this properties file.
+storeFile=
+storePassword=
+keyAlias=
+keyPassword=

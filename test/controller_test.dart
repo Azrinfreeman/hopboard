@@ -656,6 +656,83 @@ void main() {
     },
   );
 
+  test('two host copies are confirmed ready without manual Copy', () async {
+    final ca = a.clipboard as FakeClipboard;
+    final cb = b.clipboard as FakeClipboard;
+    for (final text in ['first host copy', 'second host copy']) {
+      ca.userCopy(text);
+      await eventually(
+        () => cb.text == text && b.itemStatus == 'Ready to paste',
+      );
+      await eventually(
+        () =>
+            a.members
+                .where((member) => member['id'] == b.identity.id)
+                .single['status'] ==
+            'applied',
+      );
+      expect(b.item?.text, text);
+      expect(b.textReadyToPaste, isTrue);
+    }
+    expect(cb.writes, 2);
+    expect(a.host!.engine.sequence, 2);
+    cb.userCopy('private local replacement', private: true);
+    await eventually(() => b.itemStatus == 'Local clipboard changed');
+    expect(b.textReadyToPaste, isFalse);
+    await b.leave();
+    expect(b.textReadyToPaste, isFalse);
+  });
+
+  test(
+    'receiver enables once then fresh host copies apply automatically',
+    () async {
+      await b.setAutomatic(false);
+      final ca = a.clipboard as FakeClipboard;
+      final cb = b.clipboard as FakeClipboard;
+      ca.userCopy('visible while receiver is off');
+      await eventually(() => b.item?.text == 'visible while receiver is off');
+      expect(cb.text, isNull);
+      expect(cb.writes, 0);
+      await b.setAutomatic(true);
+      expect(cb.writes, 0);
+      for (final text in ['fresh after consent', 'another fresh copy']) {
+        ca.userCopy(text);
+        await eventually(
+          () => cb.text == text && b.itemStatus == 'Ready to paste',
+        );
+      }
+      expect(cb.writes, 2);
+    },
+  );
+
+  for (final change in ['pause', 'automatic mode']) {
+    test(
+      '$change clears confirmed readiness until a fresh host copy',
+      () async {
+        final ca = a.clipboard as FakeClipboard;
+        final cb = b.clipboard as FakeClipboard;
+        ca.userCopy('confirmed before change');
+        await eventually(() => b.itemStatus == 'Ready to paste');
+        if (change == 'pause') {
+          await b.setPaused(true);
+        } else {
+          await b.setAutomatic(false);
+        }
+        expect(b.itemStatus, isNot('Ready to paste'));
+        if (change == 'pause') {
+          await b.setPaused(false);
+        } else {
+          await b.setAutomatic(true);
+        }
+        expect(b.itemStatus, isNot('Ready to paste'));
+        expect(cb.writes, 1);
+        ca.userCopy('confirmed after change');
+        await eventually(() => cb.text == 'confirmed after change');
+        expect(b.itemStatus, 'Ready to paste');
+      },
+    );
+  }
+
   test(
     'code pairing reconnects and copying only the code stays private',
     () async {
@@ -940,6 +1017,7 @@ void main() {
       await eventually(() => cb.writes == 1);
       await Future<void>.delayed(const Duration(milliseconds: 5400));
       expect(b.itemStatus, contains('Clipboard confirmation failed'));
+      expect(b.textReadyToPaste, isFalse);
       cb.readBusyUntil = null;
       ca.userCopy('next confirmed');
       await eventually(() => b.itemStatus == 'Ready to paste');

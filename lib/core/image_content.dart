@@ -32,12 +32,18 @@ class ImageContent {
   final ClipPayload payload;
   final Uint8List png;
 
-  static Future<ImageContent> create(Uint8List png, {String? text}) async {
+  static Future<ImageContent> create(
+    Uint8List png, {
+    String? text,
+    String? html,
+    String? rtf,
+  }) async {
     final meta = {...pngMetadata(png).toJson(), 'sha256': await imageHash(png)};
     return ImageContent(
       ClipPayload.fromJson({
         'kind': text?.isNotEmpty == true ? 'mixed' : 'image',
         if (text?.isNotEmpty == true) 'text': text,
+        if (text?.isNotEmpty == true) ...richFields(html, rtf),
         if (text?.isNotEmpty == true) 'image': meta else ...meta,
       }),
       png,

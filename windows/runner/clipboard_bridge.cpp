@@ -12,6 +12,7 @@
 #include <cstring>
 #include <thread>
 #include "clipboard_image.h"
+#include "virtual_clipboard.h"
 #include "updater.h"
 #include "resource.h"
 
@@ -22,6 +23,7 @@ struct ClipboardImageJob {
   PreparedClipboardImage prepared;
   std::string error;
   std::optional<std::string> text;
+  std::optional<std::string> html, rtf;
   int64_t expected = -1;
   bool writing = false;
   uint64_t generation = 0;
@@ -31,6 +33,7 @@ namespace {
 constexpr UINT kTrayMessage = WM_APP + 41;
 constexpr UINT kNetworkMessage = WM_APP + 42;
 constexpr UINT kImageMessage = WM_APP + 43;
+constexpr UINT kMainTaskMessage = WM_APP + 44;
 using Value = flutter::EncodableValue;
 using Map = flutter::EncodableMap;
 
@@ -105,6 +108,51 @@ void ExcludeFromHistory() {
   }
 }
 
+// Formatted text travels next to plain text: CF_HTML is UTF-8 with its own
+// header, RTF is 7-bit ASCII. Both are capped like the Dart payload.
+constexpr size_t kMaxRichBytes = 256 * 1024;
+
+// Reads a registered text format while the clipboard is open.
+std::optional<std::string> ReadRichFormat(const wchar_t* name, bool ascii) {
+  const UINT format = RegisterClipboardFormatW(name);
+  const HANDLE memory = format ? GetClipboardData(format) : nullptr;
+  const SIZE_T size = memory ? GlobalSize(memory) : 0;
+  if (!size) return std::nullopt;
+  const auto* bytes = static_cast<const char*>(GlobalLock(memory));
+  if (!bytes) return std::nullopt;
+  const size_t length = strnlen(bytes, size);
+  std::optional<std::string> value;
+  if (length > 0 && length <= kMaxRichBytes) {
+    value = std::string(bytes, length);
+    const bool valid = ascii
+      ? std::all_of(value->begin(), value->end(),
+          [](char c) { return static_cast<unsigned char>(c) < 0x80; })
+      : MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value->data(),
+          static_cast<int>(value->size()), nullptr, 0) > 0;
+    if (!valid) value.reset();
+  }
+  GlobalUnlock(memory);
+  return value;
+}
+
+// Adds formatted text after EmptyClipboard while the clipboard is open.
+bool WriteRichFormat(const wchar_t* name, const std::string& value) {
+  const UINT format = RegisterClipboardFormatW(name);
+  HGLOBAL memory = format ? GlobalAlloc(GMEM_MOVEABLE, value.size() + 1) : nullptr;
+  auto* buffer = memory ? static_cast<char*>(GlobalLock(memory)) : nullptr;
+  if (!buffer) { if (memory) GlobalFree(memory); return false; }
+  memcpy(buffer, value.data(), value.size());
+  buffer[value.size()] = '\0';
+  GlobalUnlock(memory);
+  if (!SetClipboardData(format, memory)) { GlobalFree(memory); return false; }
+  return true;
+}
+
+bool ValidRich(const std::string* value) {
+  return !value || (value->size() <= kMaxRichBytes &&
+                    value->find('\0') == std::string::npos);
+}
+
 void CALLBACK NetworkChanged(PVOID context, PMIB_IPINTERFACE_ROW,
                              MIB_NOTIFICATION_TYPE) {
   PostMessageW(reinterpret_cast<HWND>(context), kNetworkMessage, 0, 0);
@@ -113,6 +161,12 @@ void CALLBACK NetworkChanged(PVOID context, PMIB_IPINTERFACE_ROW,
 
 ClipboardBridge::ClipboardBridge(HWND window, flutter::BinaryMessenger* messenger)
     : window_(window) {
+  virtual_ = std::make_unique<VirtualClipboard>([this](const std::string& id) {
+    // Explorer started pasting files that may still need downloading.
+    PostMain([this, id] {
+      channel_->InvokeMethod("virtualFilesRequested", std::make_unique<Value>(id));
+    });
+  });
   channel_ = std::make_unique<flutter::MethodChannel<Value>>(
     messenger, "dev.localclipboard/native", &flutter::StandardMethodCodec::GetInstance());
   channel_->SetMethodCallHandler([this](const flutter::MethodCall<Value>& call,
@@ -220,7 +274,10 @@ ClipboardBridge::ClipboardBridge(HWND window, flutter::BinaryMessenger* messenge
       Map data;
       const DWORD revision = GetClipboardSequenceNumber();
       data[Value("revision")] = Value(static_cast<int64_t>(revision));
-      data[Value("ownWrite")] = Value(revision != 0 && revision == own_revision_);
+      // Rendering a virtual-file format on request may move the sequence
+      // number, so also recognise Hopboard's data object by its marker.
+      data[Value("ownWrite")] = Value((revision != 0 && revision == own_revision_) ||
+        IsClipboardFormatAvailable(VirtualClipboard::MarkerFormat()) != FALSE);
       data[Value("sensitive")] = Value(IsPrivateClipboard());
       const bool has_files = IsClipboardFormatAvailable(CF_HDROP) != FALSE;
       data[Value("hasFiles")] = Value(has_files);
@@ -242,6 +299,15 @@ ClipboardBridge::ClipboardBridge(HWND window, flutter::BinaryMessenger* messenge
           }
           GlobalUnlock(memory);
         }
+      }
+      // Other apps render HTML/RTF on demand, which can be slow for big
+      // selections, so only a capture of a new copy asks for them.
+      const bool include_rich = args && args->count(Value("includeRich")) &&
+        std::get_if<bool>(&args->at(Value("includeRich"))) &&
+        std::get<bool>(args->at(Value("includeRich")));
+      if (include_rich && data.count(Value("text")) && !has_files) {
+        if (auto html = ReadRichFormat(L"HTML Format", false)) data[Value("html")] = Value(*html);
+        if (auto rtf = ReadRichFormat(L"Rich Text Format", true)) data[Value("rtf")] = Value(*rtf);
       }
       const bool include_files = args && args->count(Value("includeFiles")) &&
         std::get_if<bool>(&args->at(Value("includeFiles"))) && std::get<bool>(args->at(Value("includeFiles")));
@@ -352,6 +418,10 @@ ClipboardBridge::ClipboardBridge(HWND window, flutter::BinaryMessenger* messenge
       image_job_->writing = true;
       image_job_->generation = image_write_generation_;
       if (text) image_job_->text = *text;
+      const auto* html = StringArg(args, "html");
+      const auto* rtf = StringArg(args, "rtf");
+      if (html && ValidRich(html)) image_job_->html = *html;
+      if (rtf && ValidRich(rtf)) image_job_->rtf = *rtf;
       if (args->count(Value("expectedRevision"))) image_job_->expected = Integer(args->at(Value("expectedRevision")));
       const auto job = image_job_;
       const HWND window = window_;
@@ -481,7 +551,14 @@ ClipboardBridge::ClipboardBridge(HWND window, flutter::BinaryMessenger* messenge
       GlobalUnlock(memory); GlobalUnlock(effect);
       if (!OpenClipboard(window_)) { GlobalFree(memory); GlobalFree(effect); result->Error("busy", "Clipboard is busy."); return; }
       const auto expected = args->find(Value("expectedRevision"));
-      if (expected != args->end() && Integer(expected->second) >= 0 && Integer(expected->second) != GetClipboardSequenceNumber()) {
+      const auto* replace_virtual = StringArg(args, "replaceVirtual");
+      // Upgrading Hopboard's own virtual files to real ones is allowed even if
+      // rendering moved the sequence number.
+      const bool own_virtual = replace_virtual &&
+        IsClipboardFormatAvailable(VirtualClipboard::MarkerFormat()) &&
+        virtual_->IsCurrent(*replace_virtual);
+      if (!own_virtual && expected != args->end() && Integer(expected->second) >= 0 &&
+          Integer(expected->second) != GetClipboardSequenceNumber()) {
         CloseClipboard(); GlobalFree(memory); GlobalFree(effect); result->Success(Value(false)); return;
       }
       bool ok = EmptyClipboard() && SetClipboardData(CF_HDROP, memory);
@@ -489,6 +566,83 @@ ClipboardBridge::ClipboardBridge(HWND window, flutter::BinaryMessenger* messenge
       if (!ok || !SetClipboardData(RegisterClipboardFormatW(L"Preferred DropEffect"), effect)) { GlobalFree(effect); ok = false; }
       if (ok) { ExcludeFromHistory(); own_revision_ = GetClipboardSequenceNumber(); }
       CloseClipboard(); result->Success(Value(ok));
+    } else if (method == "writeVirtualFiles") {
+      const auto* args = call.arguments() ? std::get_if<Map>(call.arguments()) : nullptr;
+      const auto* id = StringArg(args, "id");
+      const auto* entries = args && args->count(Value("entries")) ?
+        std::get_if<flutter::EncodableList>(&args->at(Value("entries"))) : nullptr;
+      if (!id || id->empty() || !entries || entries->empty() || entries->size() > 5000) {
+        result->Error("files", "Invalid virtual file list."); return;
+      }
+      auto item = std::make_shared<VirtualItemState>();
+      item->id = *id;
+      for (const auto& value : *entries) {
+        const auto* entry = std::get_if<Map>(&value);
+        const auto* path = StringArg(entry, "path");
+        if (!entry || !path || path->empty() || path->find('\0') != std::string::npos) {
+          result->Error("files", "Invalid virtual file entry."); return;
+        }
+        VirtualEntry parsed;
+        parsed.path = Wide(*path);
+        std::replace(parsed.path.begin(), parsed.path.end(), L'/', L'\\');
+        if (parsed.path.empty() || parsed.path.size() >= MAX_PATH) {
+          result->Error("long", "A file path is too long for virtual files."); return;
+        }
+        const auto directory = entry->find(Value("directory"));
+        parsed.directory = directory != entry->end() &&
+          std::get_if<bool>(&directory->second) && std::get<bool>(directory->second);
+        const auto size = entry->find(Value("size"));
+        const int64_t bytes = size == entry->end() ? 0 : Integer(size->second);
+        if (bytes < 0) { result->Error("files", "Invalid file size."); return; }
+        parsed.size = static_cast<uint64_t>(bytes);
+        const auto mtime = entry->find(Value("mtime"));
+        parsed.mtime = mtime == entry->end() ? -1 : Integer(mtime->second);
+        item->entries.push_back(std::move(parsed));
+      }
+      const auto expected = args->find(Value("expectedRevision"));
+      const int64_t expected_revision =
+        expected == args->end() ? -1 : Integer(expected->second);
+      std::shared_ptr<flutter::MethodResult<Value>> shared(std::move(result));
+      virtual_->Write(item, expected_revision, [this, shared](int status, int64_t revision) {
+        PostMain([this, shared, status, revision] {
+          if (status == 1) {
+            own_revision_ = static_cast<DWORD>(revision);
+            shared->Success(Value(true));
+          } else if (status == 0) {
+            shared->Success(Value(false));
+          } else if (status == -1) {
+            shared->Error("busy", "Clipboard is temporarily busy.");
+          } else {
+            shared->Error("clipboard", "Could not place virtual files on the clipboard.");
+          }
+        });
+      });
+    } else if (method == "virtualFileProgress") {
+      const auto* args = call.arguments() ? std::get_if<Map>(call.arguments()) : nullptr;
+      const auto* id = StringArg(args, "id");
+      const auto* path = StringArg(args, "path");
+      auto flag = [args](const char* key) {
+        if (!args) return false;
+        const auto found = args->find(Value(key));
+        return found != args->end() && std::get_if<bool>(&found->second) &&
+          std::get<bool>(found->second);
+      };
+      const int64_t entry = args && args->count(Value("entry")) ? Integer(args->at(Value("entry"))) : -1;
+      const int64_t available = args && args->count(Value("available")) ? Integer(args->at(Value("available"))) : 0;
+      if (!id || (entry < 0 && !flag("failed"))) { result->Error("files", "Invalid progress."); return; }
+      std::wstring wide_path;
+      if (path) wide_path = Wide(*path);
+      result->Success(Value(virtual_->Progress(*id, static_cast<size_t>((std::max)(entry, int64_t{0})),
+        path ? &wide_path : nullptr, static_cast<uint64_t>((std::max)(available, int64_t{0})),
+        flag("done"), flag("failed"))));
+    } else if (method == "clearVirtualFiles") {
+      const auto* args = call.arguments() ? std::get_if<Map>(call.arguments()) : nullptr;
+      const auto* id = StringArg(args, "id");
+      if (!id) { result->Error("files", "Missing id."); return; }
+      std::shared_ptr<flutter::MethodResult<Value>> shared(std::move(result));
+      virtual_->Clear(*id, [this, shared](bool cleared) {
+        PostMain([shared, cleared] { shared->Success(Value(cleared)); });
+      });
     } else if (method == "writeClipboard") {
       const auto* args = call.arguments() ? std::get_if<Map>(call.arguments()) : nullptr;
       if (!args || !args->count(Value("text"))) {
@@ -497,6 +651,11 @@ ClipboardBridge::ClipboardBridge(HWND window, flutter::BinaryMessenger* messenge
       const auto* text = std::get_if<std::string>(&args->at(Value("text")));
       if (!text || text->size() > 65536 || text->find('\0') != std::string::npos) {
         result->Error("text", "Unsupported clipboard text."); return;
+      }
+      const auto* html = StringArg(args, "html");
+      const auto* rtf = StringArg(args, "rtf");
+      if (!ValidRich(html) || !ValidRich(rtf)) {
+        result->Error("text", "Unsupported formatted text."); return;
       }
       const auto wide = Wide(*text);
       HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, (wide.size() + 1) * sizeof(wchar_t));
@@ -515,6 +674,9 @@ ClipboardBridge::ClipboardBridge(HWND window, flutter::BinaryMessenger* messenge
       }
       const bool success = EmptyClipboard() && SetClipboardData(CF_UNICODETEXT, memory);
       if (success) {
+        // Formatting is best effort; plain text is what must arrive.
+        if (html) WriteRichFormat(L"HTML Format", *html);
+        if (rtf) WriteRichFormat(L"Rich Text Format", *rtf);
         ExcludeFromHistory();
         own_revision_ = GetClipboardSequenceNumber();
       } else {
@@ -572,6 +734,7 @@ ClipboardBridge::ClipboardBridge(HWND window, flutter::BinaryMessenger* messenge
 
 ClipboardBridge::~ClipboardBridge() {
   if (image_worker_.joinable()) image_worker_.join();
+  virtual_.reset();
   RemoveClipboardFormatListener(window_);
   if (network_notification_) CancelMibChangeNotify2(network_notification_);
   if (tray_ready_) Shell_NotifyIconW(NIM_DELETE, &tray_);
@@ -616,6 +779,8 @@ void ClipboardBridge::CompleteImage() {
   if (success && text) {
     if (SetClipboardData(CF_UNICODETEXT, text)) text = nullptr;
     else success = false;
+    if (success && job->html) WriteRichFormat(L"HTML Format", *job->html);
+    if (success && job->rtf) WriteRichFormat(L"Rich Text Format", *job->rtf);
   }
   if (success) {
     if (SetClipboardData(RegisterClipboardFormatW(L"PNG"), job->prepared.png)) job->prepared.png = nullptr;
@@ -631,6 +796,14 @@ void ClipboardBridge::CompleteImage() {
   if (text) GlobalFree(text);
   if (success) job->result->Success(Value(true));
   else job->result->Error("clipboard", "Could not write all clipboard formats.");
+}
+
+void ClipboardBridge::PostMain(std::function<void()> task) {
+  {
+    std::lock_guard<std::mutex> lock(main_mutex_);
+    main_tasks_.push_back(std::move(task));
+  }
+  PostMessageW(window_, kMainTaskMessage, 0, 0);
 }
 
 void ClipboardBridge::Show() {
@@ -657,6 +830,15 @@ std::optional<LRESULT> ClipboardBridge::Handle(UINT message, WPARAM wparam, LPAR
     return 0;
   }
   if (message == kImageMessage) { CompleteImage(); return 0; }
+  if (message == kMainTaskMessage) {
+    std::deque<std::function<void()>> tasks;
+    {
+      std::lock_guard<std::mutex> lock(main_mutex_);
+      tasks.swap(main_tasks_);
+    }
+    for (auto& task : tasks) task();
+    return 0;
+  }
   if (message == WM_CLIPBOARDUPDATE) {
     channel_->InvokeMethod("clipboardChanged", std::make_unique<Value>()); return 0;
   }
