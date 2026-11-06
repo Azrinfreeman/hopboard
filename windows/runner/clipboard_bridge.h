@@ -6,13 +6,17 @@
 #include <flutter/standard_method_codec.h>
 #include <windows.h>
 #include <shellapi.h>
+#include <deque>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <thread>
 #include <vector>
 #include <string>
 
 struct ClipboardImageJob;
+class VirtualClipboard;
 
 class ClipboardBridge {
  public:
@@ -34,6 +38,11 @@ class ClipboardBridge {
   uint64_t image_serial_ = 0;
   uint64_t image_write_generation_ = 0;
   size_t write_size_ = 0;
+  std::unique_ptr<VirtualClipboard> virtual_;
+  std::mutex main_mutex_;
+  std::deque<std::function<void()>> main_tasks_;
+  // Runs a task on the platform thread (from any thread).
+  void PostMain(std::function<void()> task);
   void CompleteImage();
   void Show();
   void Action(const char* action);

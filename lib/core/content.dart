@@ -196,10 +196,49 @@ class ImageMeta {
   };
 }
 
+/// Formatted copies of the text (CF_HTML and RTF). Together they stay well
+/// inside one control frame next to 64 KiB of plain text.
+const maxRichBytes = 256 * 1024;
+
+/// Keeps rich formats that fit, dropping RTF first (it is often the larger,
+/// image-laden one). Returns JSON fields for a text or mixed payload.
+Map<String, String> richFields(String? html, String? rtf) {
+  // Measured as encoded JSON: escaping CF_HTML's many line breaks grows it.
+  int size(String? value) =>
+      value == null ? 0 : utf8.encode(jsonEncode(value)).length;
+  bool usable(String? value) =>
+      value != null && value.isNotEmpty && !value.contains('\u0000');
+  final keepHtml = usable(html) && size(html) <= maxRichBytes;
+  final keepRtf =
+      usable(rtf) && size(rtf) + (keepHtml ? size(html) : 0) <= maxRichBytes;
+  return {'html': ?(keepHtml ? html : null), 'rtf': ?(keepRtf ? rtf : null)};
+}
+
+String? _richText(Object? value, String name) {
+  if (value == null) return null;
+  if (value is! String ||
+      value.isEmpty ||
+      value.contains('\u0000') ||
+      utf8.encode(value).length > maxRichBytes) {
+    throw FormatException('Invalid $name.');
+  }
+  return value;
+}
+
 class ClipPayload {
-  ClipPayload._(this.kind, this.text, this.image, this.files);
+  ClipPayload._(
+    this.kind,
+    this.text,
+    this.image,
+    this.files, {
+    this.html,
+    this.rtf,
+  });
   final String kind;
   final String? text;
+
+  /// Optional formatted versions of [text]; older peers ignore them.
+  final String? html, rtf;
   final ImageMeta? image;
   final FileManifest? files;
   bool get isText => kind == 'text';
@@ -216,8 +255,24 @@ class ClipPayload {
     int limit = defaultItemBytes,
   }) {
     final kind = data['kind'] ?? 'text';
+    String? html, rtf;
+    if (kind == 'text' || kind == 'mixed') {
+      html = _richText(data['html'], 'HTML');
+      rtf = _richText(data['rtf'], 'RTF');
+      if (utf8.encode(html ?? '').length + utf8.encode(rtf ?? '').length >
+          maxRichBytes) {
+        throw const FormatException('Formatted text is too large.');
+      }
+    }
     if (kind == 'text') {
-      return ClipPayload._('text', validText(data['text']), null, null);
+      return ClipPayload._(
+        'text',
+        validText(data['text']),
+        null,
+        null,
+        html: html,
+        rtf: rtf,
+      );
     }
     if (kind == 'files') {
       return ClipPayload._(
@@ -237,6 +292,8 @@ class ClipPayload {
         kind == 'mixed' ? validText(data['text']) : null,
         ImageMeta.fromJson(meta),
         null,
+        html: html,
+        rtf: rtf,
       );
     }
     throw const FormatException('Unsupported content kind.');
@@ -244,6 +301,8 @@ class ClipPayload {
   Map<String, dynamic> toJson() => {
     if (!isText) 'kind': kind,
     if (text != null) 'text': text,
+    'html': ?html,
+    'rtf': ?rtf,
     if (kind == 'image') ...image!.toJson(),
     if (kind == 'mixed') 'image': image!.toJson(),
     if (files != null) ...files!.toJson(),

@@ -4,17 +4,20 @@ import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:local_clipboard/app/controller.dart';
+import 'package:local_clipboard/core/content.dart';
 import 'package:local_clipboard/core/identity.dart';
 import 'package:local_clipboard/platform/clipboard_bridge.dart';
 import 'package:local_clipboard/platform/discovery.dart';
 
 class FakeClipboard extends ClipboardBridge {
   String? text;
+  String? html, rtf;
   Uint8List? png;
   int revision = 0;
   bool own = false;
   bool sensitive = false;
   int writes = 0;
+  bool unmarkedChangeAfterWrite = false;
   final notices = <String>[];
   void Function()? beforeWrite;
   DateTime? readBusyUntil;
@@ -32,6 +35,48 @@ class FakeClipboard extends ClipboardBridge {
     if (readBusyUntil?.isAfter(DateTime.now()) == true) {
       throw PlatformException(code: 'busy', message: 'Clipboard busy.');
     }
+  }
+
+  // Phone background receive.
+  @override
+  bool get supportsBackgroundReceive => true;
+  int stampValue = 1;
+  bool stampReadable = true;
+  bool backgroundWriteDenied = false;
+  int backgroundWrites = 0;
+  final serviceStates = <bool>[];
+  final receivedNotices = <String>[];
+
+  @override
+  Future<int?> clipboardStamp() async => stampReadable ? stampValue : null;
+
+  @override
+  Future<BackgroundWrite> writeInBackground(String value) async {
+    if (backgroundWriteDenied) {
+      throw PlatformException(code: 'denied', message: 'Blocked.');
+    }
+    text = value;
+    filePaths = [];
+    png = null;
+    revision++;
+    own = true;
+    sensitive = false;
+    stampValue++;
+    writes++;
+    backgroundWrites++;
+    return BackgroundWrite(revision, stampReadable ? stampValue : null);
+  }
+
+  @override
+  Future<void> setBackgroundService(
+    bool enabled, {
+    String? hostName,
+    bool paused = false,
+  }) async => serviceStates.add(enabled);
+
+  @override
+  Future<void> notifyReceived(String sender, {bool needsAction = false}) async {
+    receivedNotices.add(needsAction ? 'action:$sender' : sender);
   }
 
   @override
@@ -59,14 +104,83 @@ class FakeClipboard extends ClipboardBridge {
   }
 
   @override
-  Future<bool> writeFiles(List<String> paths, {int? expectedRevision}) async {
-    final success = await write('', expectedRevision: expectedRevision);
+  Future<bool> writeFiles(
+    List<String> paths, {
+    int? expectedRevision,
+    String? replaceVirtual,
+  }) async {
+    final upgrade = replaceVirtual != null && replaceVirtual == virtualId;
+    final success = await write(
+      '',
+      expectedRevision: upgrade ? revision : expectedRevision,
+    );
     if (success) {
       filePaths = paths;
       text = null;
     }
     return success;
   }
+
+  bool virtualEnabled = false;
+  @override
+  bool get supportsVirtualFiles => virtualEnabled;
+
+  /// Id of the item whose virtual files are on this clipboard, if any.
+  String? virtualId;
+  List<String> virtualPaths = [];
+  final progress = <String, Map<int, ({String? path, int bytes, bool done})>>{};
+  final failedVirtual = <String>{};
+
+  @override
+  Future<bool> writeVirtualFiles(
+    String id,
+    FileManifest manifest, {
+    int? expectedRevision,
+  }) async {
+    final success = await write('', expectedRevision: expectedRevision);
+    if (success) {
+      text = null;
+      virtualId = id;
+      virtualPaths = [for (final entry in manifest.entries) entry.path];
+    }
+    return success;
+  }
+
+  @override
+  Future<void> virtualFileProgress(
+    String id, {
+    int entry = -1,
+    String? path,
+    int available = 0,
+    bool done = false,
+    bool failed = false,
+  }) async {
+    if (failed) {
+      failedVirtual.add(id);
+      return;
+    }
+    final entries = progress.putIfAbsent(id, () => {});
+    final previous = entries[entry];
+    entries[entry] = (
+      path: path ?? previous?.path,
+      bytes: available,
+      done: done || (previous?.done ?? false),
+    );
+  }
+
+  @override
+  Future<bool> clearVirtualFiles(String id) async {
+    if (virtualId != id) return false;
+    virtualId = null;
+    virtualPaths = [];
+    revision++;
+    own = false;
+    changes.add(null);
+    return true;
+  }
+
+  /// Simulates Explorer starting to paste the virtual files.
+  void pasteVirtual() => virtualRequests.add(virtualId!);
 
   void userCopyFiles(
     List<String> paths, {
@@ -99,11 +213,13 @@ class FakeClipboard extends ClipboardBridge {
   }
 
   @override
-  Future<ClipboardSnapshot> read() async {
+  Future<ClipboardSnapshot> read({bool includeRich = false}) async {
     await _checkRead();
     return ClipboardSnapshot(
       text,
       revision,
+      html: html,
+      rtf: rtf,
       ownWrite: own,
       sensitive: sensitive,
       hasImage: png != null,
@@ -114,11 +230,16 @@ class FakeClipboard extends ClipboardBridge {
   }
 
   @override
-  Future<ClipboardSnapshot> readContent({bool includeImages = true}) async {
+  Future<ClipboardSnapshot> readContent({
+    bool includeImages = true,
+    bool includeRich = false,
+  }) async {
     await _checkRead();
     return ClipboardSnapshot(
       text,
       revision,
+      html: html,
+      rtf: rtf,
       ownWrite: own,
       sensitive: sensitive,
       png: includeImages ? png : null,
@@ -134,8 +255,15 @@ class FakeClipboard extends ClipboardBridge {
     Uint8List bytes, {
     String? text,
     int? expectedRevision,
+    String? html,
+    String? rtf,
   }) async {
-    final success = await write(text ?? '', expectedRevision: expectedRevision);
+    final success = await write(
+      text ?? '',
+      expectedRevision: expectedRevision,
+      html: html,
+      rtf: rtf,
+    );
     if (success) {
       png = bytes;
       this.text = text;
@@ -144,7 +272,12 @@ class FakeClipboard extends ClipboardBridge {
   }
 
   @override
-  Future<bool> write(String value, {int? expectedRevision}) async {
+  Future<bool> write(
+    String value, {
+    int? expectedRevision,
+    String? html,
+    String? rtf,
+  }) async {
     writeAttempts++;
     if (busyWrites > 0) {
       busyWrites--;
@@ -154,7 +287,10 @@ class FakeClipboard extends ClipboardBridge {
     beforeWrite = null;
     hook?.call();
     if (expectedRevision != null && expectedRevision != revision) return false;
+    virtualId = null;
     text = value;
+    this.html = html;
+    this.rtf = rtf;
     filePaths = [];
     cut = false;
     png = null;
@@ -162,6 +298,11 @@ class FakeClipboard extends ClipboardBridge {
     own = true;
     sensitive = false;
     writes++;
+    if (unmarkedChangeAfterWrite) {
+      // Android can report our own write again, without our marker.
+      revision++;
+      own = false;
+    }
     if (busyAfterWrite != null) {
       readBusyUntil = DateTime.now().add(busyAfterWrite!);
       busyAfterWrite = null;
@@ -170,11 +311,20 @@ class FakeClipboard extends ClipboardBridge {
     return true;
   }
 
-  void userCopy(String value, {bool private = false}) {
+  void userCopy(
+    String value, {
+    bool private = false,
+    String? html,
+    String? rtf,
+  }) {
+    virtualId = null;
     text = value;
+    this.html = html;
+    this.rtf = rtf;
     filePaths = [];
     cut = false;
     png = null;
+    stampValue++;
     revision++;
     own = false;
     sensitive = private;
@@ -210,17 +360,30 @@ class FakeDiscovery extends LanDiscovery {
 Future<AppController> testController(
   Identity identity, {
   bool automatic = true,
+  bool phone = false,
+  bool backgroundReceive = false,
+  // Text already on the clipboard before the app first looks at it.
+  String? existingText,
+  bool existingPrivate = false,
+  // Existing protection tests opt out of the app's "newest copy wins" default.
+  bool newestWins = false,
 }) async {
   SharedPreferences.setMockInitialValues({
     'automatic': automatic,
+    'newestWins': newestWins,
+    'backgroundReceive': backgroundReceive,
     'deviceName': identity.id,
   });
   final controller = AppController(
     identity: identity,
     trust: TrustStore(MemoryVault()),
-    clipboard: FakeClipboard(),
+    clipboard: FakeClipboard()
+      ..text = existingText
+      ..revision = existingText == null ? 0 : 1
+      ..sensitive = existingPrivate,
     discovery: FakeDiscovery(),
     preferences: await SharedPreferences.getInstance(),
+    mobileOverride: phone ? true : null,
   );
   await controller.initialize(discover: false, loadInterfaces: false);
   return controller;
