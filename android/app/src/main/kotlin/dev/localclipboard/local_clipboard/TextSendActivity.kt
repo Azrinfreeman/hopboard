@@ -73,12 +73,16 @@ abstract class TextSendActivity : Activity() {
                 finish()
                 return
             }
-            handler.postDelayed(timeout, 30000)
-            channel.invokeMethod("sendExternalText", request, object : MethodChannel.Result {
-                override fun success(result: Any?) = complete("Sent to PC")
-                override fun error(code: String, message: String?, details: Any?) = complete(message ?: "Open Hopboard and try again.")
-                override fun notImplemented() = complete("Open Hopboard and try again.")
-            })
+            val dispatch = {
+                handler.postDelayed(timeout, 30000)
+                channel.invokeMethod("sendExternalText", request, object : MethodChannel.Result {
+                    override fun success(result: Any?) = complete("Sent to PC")
+                    override fun error(code: String, message: String?, details: Any?) = complete(message ?: "Open Hopboard and try again.")
+                    override fun notImplemented() = complete("Open Hopboard and try again.")
+                })
+            }
+            // Text from another app is never sent until the user confirms it.
+            if (sharedText) confirmSend(this, text!!, dispatch) { complete("Not sent.") } else dispatch()
         } catch (failure: Exception) {
             complete(failure.message ?: "Open Hopboard and try again.")
         }
@@ -101,6 +105,17 @@ internal fun sharedIntentText(intent: Intent): String? = when (intent.action) {
     Intent.ACTION_SEND -> if (intent.type == "text/plain") intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString() else null
     Intent.ACTION_PROCESS_TEXT -> if (intent.type == "text/plain") intent.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT)?.toString() else null
     else -> null
+}
+
+internal fun confirmSend(activity: Activity, text: String, onSend: () -> Unit, onCancel: () -> Unit) {
+    val preview = if (text.length > 300) text.take(300) + "…" else text
+    android.app.AlertDialog.Builder(activity)
+        .setTitle("Send this text to your PC?")
+        .setMessage(preview)
+        .setPositiveButton("Send") { _, _ -> onSend() }
+        .setNegativeButton("Cancel") { _, _ -> onCancel() }
+        .setOnCancelListener { onCancel() }
+        .show()
 }
 
 internal fun validateSendText(text: String?) {

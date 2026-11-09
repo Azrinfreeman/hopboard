@@ -7,10 +7,50 @@ import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
+import '../core/content.dart';
 import '../core/host.dart';
 import '../core/identity.dart';
 import '../core/protocol.dart';
 import 'controller.dart';
+
+/// Shown above received files that Windows would run or resolve when opened.
+class _RiskyFilesWarning extends StatelessWidget {
+  const _RiskyFilesWarning({required this.names, required this.sender});
+  final List<String> names;
+  final String sender;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final shown = names.take(3).join(', ');
+    final more = names.length > 3 ? ' and ${names.length - 3} more' : '';
+    return Semantics(
+      container: true,
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: scheme.errorContainer,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(Icons.warning_amber_rounded, color: scheme.onErrorContainer),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                '$sender sent programs or shortcuts that can run code when '
+                'opened: $shown$more. Only open them if you expected them from '
+                'this person.',
+                style: TextStyle(color: scheme.onErrorContainer, fontSize: 13),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
 
 class _SharedImagePreview extends StatefulWidget {
   const _SharedImagePreview({required this.bytes, required this.sender});
@@ -1540,6 +1580,15 @@ class _ClipboardHomeState extends State<ClipboardHome>
                         ),
                       ),
               ),
+              if (app.item?.payload.files != null &&
+                  app.item!.senderId != app.identity.id &&
+                  riskyFilePaths(app.item!.payload.files!).isNotEmpty) ...[
+                const SizedBox(height: 12),
+                _RiskyFilesWarning(
+                  names: riskyFilePaths(app.item!.payload.files!),
+                  sender: app.item!.senderName,
+                ),
+              ],
               const SizedBox(height: 16),
               Wrap(
                 alignment: WrapAlignment.spaceBetween,

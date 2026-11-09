@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:basic_utils/basic_utils.dart' show CryptoUtils;
 import 'package:crypto/crypto.dart';
 import 'package:flutter/services.dart';
 
@@ -26,10 +27,47 @@ class _DigestSink implements Sink<Digest> {
 }
 
 class UpdateService {
-  UpdateService({this.fetch, this.directory});
+  UpdateService({this.fetch, this.directory, String? publicKeyPem})
+    : publicKeyPem = publicKeyPem ?? updateSigningPublicKeyPem;
   // Injection keeps updater tests entirely offline.
   final Stream<List<int>> Function(Uri)? fetch;
   final Future<Directory> Function()? directory;
+  final String publicKeyPem;
+
+  /// RSA-3072 public key (PEM, "BEGIN PUBLIC KEY") of the offline release key.
+  /// Generate it with `dart run tools/update_signing.dart generate`; until
+  /// one is pinned here every update is refused.
+  static const updateSigningPublicKeyPem = '''
+-----BEGIN PUBLIC KEY-----
+MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEAjyaQ5c23h7ET/P94KMNX
+ahuDCmeQXDenvLJbDmR3P+G9ES4nsFOeJWc2Z4f0zItISs74hb1moLkX3lSikYxs
+46NYZAK451WfKXu8Cfo8r6cebby+e9Y2gBM4HrLSNgyCiqzVIYzIsQnAUQ1vxT/y
+U4hP3/zA9iV6SVvrPdLXfuPTSO6hVhDeFXy3ncZ2Fvt03dNs2bnImtcgr6BMfOsj
+dwrlNRiuEjHH077+IumndLtL83MpZo8LFDkUdhY1bWmp6U0fVoUdMSabVvAW/m4k
+itNqVNfxvnjd4QH+EK1iF4lzg/4qq196uN5XfzwUXdud5d6s8udItJrgVmKoivb7
+AS+1bPT05YCuqMxvUzYIbQWiRyQMrs0i7uFqHFPJGWmf4UN4oPhD+cVcxAlcEneg
+Gmxt6DcYAnhN61XsTAVhiAsJNggwdbv1pU/N2yotQcyjhIrbY9hAm7ciX1yNvu/M
+VstIi9VAF0fuv4Hkq3m1Barc55MQmBva7vzB4SUK8RQ9AgMBAAE=
+-----END PUBLIC KEY-----
+''';
+
+  static bool verifyManifestSignature(
+    Uint8List manifest,
+    Uint8List signature,
+    String pem,
+  ) {
+    if (pem.trim().isEmpty) return false;
+    try {
+      return CryptoUtils.rsaVerify(
+        CryptoUtils.rsaPublicKeyFromPem(pem),
+        manifest,
+        signature,
+        algorithm: 'SHA-256/RSA',
+      );
+    } catch (_) {
+      return false;
+    }
+  }
   static const _channel = MethodChannel('dev.localclipboard/native');
   static final releases = Uri.https(
     'api.github.com',
@@ -141,13 +179,33 @@ class UpdateService {
           expectedSize > 256 * 1024 * 1024) {
         throw const FormatException('Unsupported installer size.');
       }
-      final checksum = utf8
-          .decode(await _small(address(asset('$filename.sha256')), 4096))
-          .trim();
-      final match = RegExp(r'^([0-9a-fA-F]{64})(?:\s+\*?([^\r\n]+))?$')
-          .firstMatch(checksum);
-      if (match == null || match[2] != null && match[2] != filename) {
-        throw const FormatException('Invalid installer checksum.');
+      // Authenticity: the manifest must carry the maintainer's offline
+      // signature. A checksum hosted next to the installer proves nothing.
+      final manifestBytes = Uint8List.fromList(
+        await _small(address(asset('$filename.manifest.json')), 4096),
+      );
+      final signature = base64.decode(
+        utf8
+            .decode(await _small(address(asset('$filename.manifest.sig')), 4096))
+            .trim(),
+      );
+      if (!verifyManifestSignature(
+        manifestBytes,
+        Uint8List.fromList(signature),
+        publicKeyPem,
+      )) {
+        throw const FormatException(
+          'The update is not signed by the Hopboard maintainer. Nothing was installed.',
+        );
+      }
+      final manifest = jsonDecode(utf8.decode(manifestBytes)) as Map;
+      final signedHash = manifest['sha256'];
+      if (manifest['version'] != version ||
+          manifest['filename'] != filename ||
+          manifest['size'] != expectedSize ||
+          signedHash is! String ||
+          !RegExp(r'^[0-9a-f]{64}$').hasMatch(signedHash)) {
+        throw const FormatException('Invalid update manifest.');
       }
       final base = directory != null
           ? await directory!()
@@ -177,7 +235,7 @@ class UpdateService {
       }
       hash.close();
       final digest = sink.digest!.toString();
-      if (size != expectedSize || digest != match[1]!.toLowerCase()) {
+      if (size != expectedSize || digest != signedHash) {
         throw const FormatException(
           'Installer verification failed. Nothing was installed.',
         );

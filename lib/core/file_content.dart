@@ -199,7 +199,14 @@ class ReceivedFiles {
             }
             await output.writeFrom(chunk);
             received += chunk.length;
-            entryProgress?.call(position, file.path, length, false);
+            // Hold back the final byte until the hash check has passed, so a
+            // paste can never complete with unverified data.
+            entryProgress?.call(
+              position,
+              file.path,
+              length >= entry.size ? entry.size - 1 : length,
+              false,
+            );
             progress?.call(
               manifest.totalBytes == 0
                   ? 100

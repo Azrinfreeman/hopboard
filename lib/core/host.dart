@@ -77,6 +77,8 @@ class LocalHost {
   Duration _inviteDeadline = Duration.zero;
   PairRequest? _pending;
   PairCodeWindow? _codeWindow;
+  PairCodeWindow? _startsWindow;
+  final Map<String, int> _startsByAddress = {};
   bool _stopped = false;
   String? address;
   // Cached: a failed rebind leaves _server closed, but the port is still ours.
@@ -447,6 +449,18 @@ class LocalHost {
       if (!RegExp(r'^[A-Za-z0-9_-]{43}$').hasMatch(nonce)) {
         throw const FormatException('Invalid pairing nonce.');
       }
+      // Each start costs a 3072-bit SRP computation on the UI isolate, so it
+      // is limited per address and in total for the life of an invitation.
+      if (!identical(window, _startsWindow)) {
+        _startsWindow = window;
+        _startsByAddress.clear();
+      }
+      final starts = (_startsByAddress[peer.address] ?? 0) + 1;
+      _startsByAddress[peer.address] = starts;
+      if (starts > 6 ||
+          _startsByAddress.values.fold<int>(0, (a, b) => a + b) > 30) {
+        throw SessionException('Too many pairing attempts. Try again later.', 'busy');
+      }
       final exchange = window.start(nonce, source: peer.address);
       peer.codePair = exchange;
       peer.authenticationTimer?.cancel();
@@ -513,6 +527,12 @@ class LocalHost {
       },
     );
     if (_pending == request) _pending = null;
+    if (!accepted) {
+      // A declined or timed-out request ends the invitation, so the same
+      // code or QR cannot be used to keep pestering the host.
+      _invite = null;
+      _codeWindow = null;
+    }
     if (!accepted ||
         _stopped ||
         peer.connection.closed ||

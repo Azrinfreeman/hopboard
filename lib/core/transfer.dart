@@ -344,7 +344,10 @@ class TransferHost {
     _tickets.removeWhere((_, t) => t.age.elapsed > const Duration(seconds: 60));
     final rate = _rates.putIfAbsent(device, () => []);
     rate.removeWhere((t) => _clock.elapsed - t > const Duration(seconds: 1));
-    if (role != 'serve' && rate.length >= 20 || _tickets.length >= 128) {
+    // One device may hold at most half the pool, so it cannot starve the rest.
+    if (role != 'serve' && rate.length >= 20 ||
+        _tickets.length >= 128 ||
+        _tickets.values.where((t) => t.device == device).length >= 64) {
       throw SessionException('Transfers are busy.', 'busy');
     }
     if (role != 'serve') rate.add(_clock.elapsed);

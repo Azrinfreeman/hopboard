@@ -134,7 +134,13 @@ class FileManifest {
 void validateRelativePath(String path) {
   if (path.length > 1024 ||
       utf8.encode(path).length > 4096 ||
-      RegExp(r'[\\:\x00-\x1f\x7f]').hasMatch(path)) {
+      RegExp(r'[\\:\x00-\x1f\x7f]').hasMatch(path) ||
+      // Invisible/bidirectional format characters can disguise an extension
+      // (U+202E), and lone surrogates collapse to U+FFFD on disk.
+      RegExp(
+        r'[\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff\ufff9-\ufffb\ud800-\udfff]',
+        unicode: true,
+      ).hasMatch(path)) {
     throw const FormatException('Unsafe path.');
   }
   final parts = path.split('/');
@@ -214,6 +220,39 @@ Map<String, String> richFields(String? html, String? rtf) {
   return {'html': ?(keepHtml ? html : null), 'rtf': ?(keepRtf ? rtf : null)};
 }
 
+const _riskyExtensions = {
+  'exe', 'scr', 'com', 'pif', 'msi', 'msp', 'bat', 'cmd', 'ps1', 'psm1',
+  'vbs', 'vbe', 'js', 'jse', 'wsf', 'wsh', 'hta', 'lnk', 'url', 'reg',
+  'jar', 'cpl', 'inf', 'dll', 'library-ms', 'searchconnector-ms',
+  'appx', 'msix', 'msixbundle',
+};
+
+/// Names in a received manifest that Windows would run or resolve when
+/// opened. Sharing them is allowed; the UI warns before the user opens them.
+List<String> riskyFilePaths(FileManifest manifest) => [
+  for (final e in manifest.entries)
+    if (!e.directory &&
+        _riskyExtensions.contains(e.path.split('.').last.toLowerCase()) &&
+        e.path.contains('.'))
+      e.path,
+];
+
+/// True when pasted HTML could make Word/Outlook contact a file share or
+/// another host on its own (NTLM hash leak): file: or UNC links, or any
+/// protocol-relative (//host) reference.
+bool htmlLeaksCredentials(String html) =>
+    RegExp(
+      r'''(?:file\s*:|\\\\|&#0*(?:92|x5c);|=\s*["']?\s*//|url\(\s*["']?\s*//)''',
+      caseSensitive: false,
+    ).hasMatch(html);
+
+/// True when RTF carries embedded objects, fields (INCLUDEPICTURE, links) or
+/// linked sources that Word would resolve when pasted.
+bool rtfHasActiveContent(String rtf) => RegExp(
+  r'\\(?:object|objdata|objautlink|objlink|field|fldinst|fldrslt|datafield|template)(?![a-z])',
+  caseSensitive: false,
+).hasMatch(rtf);
+
 String? _richText(Object? value, String name) {
   if (value == null) return null;
   if (value is! String ||
@@ -259,6 +298,9 @@ class ClipPayload {
     if (kind == 'text' || kind == 'mixed') {
       html = _richText(data['html'], 'HTML');
       rtf = _richText(data['rtf'], 'RTF');
+      // Unsafe formatting is dropped; the plain text still arrives.
+      if (html != null && htmlLeaksCredentials(html)) html = null;
+      if (rtf != null && rtfHasActiveContent(rtf)) rtf = null;
       if (utf8.encode(html ?? '').length + utf8.encode(rtf ?? '').length >
           maxRichBytes) {
         throw const FormatException('Formatted text is too large.');

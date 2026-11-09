@@ -47,3 +47,4 @@ UninstallAppRunningError=Hopboard is running. Choose Quit from its system tray m
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{localappdata}\Hopboard\Received"
+Type: filesandordirs; Name: "{localappdata}\LocalClipboard\Updates"

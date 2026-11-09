@@ -1,6 +1,9 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'dart:typed_data';
+
+import 'package:basic_utils/basic_utils.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:local_clipboard/core/version.dart';
@@ -15,9 +18,22 @@ void main() {
     expect(compareVersions('../../installer', '0.2.0'), null);
   });
 
-  for (final corrupt in [false, true]) {
+  final keys = CryptoUtils.generateRSAKeyPair(keySize: 2048);
+  final publicPem = CryptoUtils.encodeRSAPublicKeyToPem(
+    keys.publicKey as RSAPublicKey,
+  );
+  Uint8List sign(List<int> data, [AsymmetricKeyPair? pair]) =>
+      CryptoUtils.rsaSign(
+        (pair ?? keys).privateKey as RSAPrivateKey,
+        Uint8List.fromList(data),
+      );
+
+  // 'ok' = signed and intact; 'corrupt' = signed but wrong bytes;
+  // 'forged' = manifest signed with a key the app does not pin.
+  for (final mode in ['ok', 'corrupt', 'forged']) {
+    final corrupt = mode == 'corrupt';
     test(
-      'update download is explicit, bounded and ${corrupt ? 'rejects corruption' : 'verified'}',
+      'update download is explicit, bounded and signed ($mode)',
       () async {
         final base = await Directory.systemTemp.createTemp(
           'hopboard-update-test-',
@@ -28,8 +44,22 @@ void main() {
         const filename = 'Hopboard-Setup-99.0.0-x64.exe';
         const prefix =
             'https://github.com/Azrinfreeman/hopboard/releases/download/v99.0.0/';
+        final manifest = utf8.encode(
+          jsonEncode({
+            'version': '99.0.0',
+            'filename': filename,
+            'size': bytes.length,
+            'sha256': hash,
+          }),
+        );
+        final signature = base64.encode(
+          sign(manifest, mode == 'forged'
+              ? CryptoUtils.generateRSAKeyPair(keySize: 2048)
+              : null),
+        );
         final requested = <Uri>[];
         final service = UpdateService(
+          publicKeyPem: publicPem,
           directory: () async => base,
           fetch: (uri) async* {
             requested.add(uri);
@@ -44,20 +74,31 @@ void main() {
                       'browser_download_url': '$prefix$filename',
                     },
                     {
-                      'name': '$filename.sha256',
-                      'browser_download_url': '$prefix$filename.sha256',
+                      'name': '$filename.manifest.json',
+                      'browser_download_url': '$prefix$filename.manifest.json',
+                    },
+                    {
+                      'name': '$filename.manifest.sig',
+                      'browser_download_url': '$prefix$filename.manifest.sig',
                     },
                   ],
                 }),
               );
-            } else if (uri.path.endsWith('.sha256')) {
-              yield utf8.encode('$hash  $filename');
+            } else if (uri.path.endsWith('.manifest.json')) {
+              yield manifest;
+            } else if (uri.path.endsWith('.manifest.sig')) {
+              yield utf8.encode(signature);
             } else {
               yield corrupt ? List.filled(bytes.length, 0) : bytes;
             }
           },
         );
         expect(requested, isEmpty);
+        if (mode == 'forged') {
+          await expectLater(service.prepare(), throwsFormatException);
+          expect(requested.length, 3, reason: 'installer is never downloaded');
+          return;
+        }
         if (corrupt) {
           await expectLater(service.prepare(), throwsFormatException);
           expect(await base.list().length, 0);
@@ -69,7 +110,7 @@ void main() {
           await update.discard();
           expect(await base.list().length, 0);
         }
-        expect(requested.length, 3);
+        expect(requested.length, 4);
       },
     );
   }
@@ -98,9 +139,9 @@ void main() {
                       'https://github.com/other/repo/installer.exe',
                 },
                 {
-                  'name': 'Hopboard-Setup-99.0.0-x64.exe.sha256',
+                  'name': 'Hopboard-Setup-99.0.0-x64.exe.manifest.json',
                   'browser_download_url':
-                      'https://github.com/other/repo/checksum',
+                      'https://github.com/other/repo/manifest',
                 },
               ],
             }),

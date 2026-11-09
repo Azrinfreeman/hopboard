@@ -91,6 +91,10 @@ class MainActivity : FlutterActivity() {
         val text = pendingSharedText ?: return
         pendingSharedText = null
         sharedSendBusy = true
+        confirmSend(this, text, { sendSharedText(text) }) { sharedSendBusy = false }
+    }
+
+    private fun sendSharedText(text: String) {
         channel.invokeMethod("sendExternalText", mapOf("text" to text, "sharedText" to true), object : MethodChannel.Result {
             override fun success(result: Any?) {
                 sharedSendBusy = false
