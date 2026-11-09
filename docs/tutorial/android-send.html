@@ -49,9 +49,9 @@ flutter test --no-pub --exclude-tags large
 dart analyze --format machine lib test
 ```
 
-Follow [release signing](release-signing.md) to select your existing private signing properties and build the ARM64 APK. Keep the same package and release key so the tablet can update without losing its pairing. The authoritative version is `pubspec.yaml`; the emulator may use an additional x86_64 build. See [VALIDATION.md](../../VALIDATION.md#android-explicit-send-d20-5-november-2026) for actual results, tool limitations and the candidate location. This session used direct Dart analysis because the `flutter analyze` wrapper stalled.
+Follow [release signing](release-signing.md) to select your existing private signing properties and build the ARM64 APK. Keep the same package and release key so the tablet can update without losing its pairing. The authoritative version is `pubspec.yaml`; the emulator may use an additional x86_64 build.
 
-On the tablet, test Share from Chrome and Notes, the selection-menu entry where supported, Send to PC after copying elsewhere, private text, PC-to-tablet echo suppression, an unreachable PC, Pause and Stop. Record results in [the device checklist](../testing/device-test-checklist.md). App-specific Share menus and Xiaomi background restrictions still require real-device verification.
+On the tablet, test Share from Chrome and Notes, the selection-menu entry where supported, Send to PC after copying elsewhere, private text, PC-to-tablet echo suppression, an unreachable PC, Pause and Stop. App-specific Share menus and Xiaomi background restrictions still require real-device verification.
 
 ## Troubleshooting
 

@@ -29,11 +29,33 @@ Hopboard moves text between your own devices over your local network. It needs n
 - **Clipboard privacy:** copies that password managers mark as private are never sent automatically.
 - **Tested:** automated tests cover real TLS connections and attack cases such as spoofed hosts, guessed codes and connection floods.
 
-Built with Flutter and Dart for Windows and Android (iPhone source included, not yet built). Current source is 0.3.0+15 (Windows seamless clipboard; Android is a local test candidate and not part of the 0.3.0 release). The owner confirmed Android D20 sending works; rc.5 adds a [background callback diagnostic](docs/tutorial/android-send.md#try-the-d21-callback-test) for the D21 experiment. Automatic background sending still needs that device result and a later overlay/focus check. Remaining physical-device checks are listed in [VALIDATION.md](VALIDATION.md). This code has not had an independent security audit. The Windows installer is unsigned, so Windows SmartScreen will warn when you run it.
+Built with Flutter and Dart for Windows and Android (iPhone source included, not yet built). Current source is 0.3.0+15: Windows seamless clipboard, a security-hardening pass, and signed in-app updates. The 0.3.0 release carries a Windows installer and a release-signed Android ARM64 APK. The owner confirmed Android D20 sending works; a [background callback diagnostic](docs/tutorial/android-send.md#try-the-d21-callback-test) exists for the D21 experiment. Automatic background sending still needs that device result and a later overlay/focus check. Physical-device checks are still incomplete. This code has not had an independent security audit. The Windows installer has no Authenticode signature, so Windows SmartScreen will warn when you run it; its update manifest is signed separately (see [Signed updates](#signed-updates-windows)).
 
 ## Download
 
-Get the Windows installer from the [0.3.0 release](https://github.com/Azrinfreeman/hopboard/releases/tag/v0.3.0). It adds the seamless clipboard: newest copy wins, files that stream while Explorer pastes, and formatted text. Install it on every PC; earlier releases lack these. The installer is unsigned, so Windows SmartScreen will warn; check the download against the attached `.sha256` file. Quit Hopboard from its system tray menu before upgrading. The Android ARM64 APK (`Hopboard-Android-arm64.apk`, signed with the owner release key, certificate SHA-256 `9a2bdc94972cbb1a2d58030056c5cf891bc97969c47d6e91ee96fcdcab305ecd`) is attached to the same release; it was published before the physical-device checks in [VALIDATION.md](VALIDATION.md) were completed, so treat Android as a preview.
+Get the Windows installer from the [0.3.0 release](https://github.com/Azrinfreeman/hopboard/releases/tag/v0.3.0). It adds the seamless clipboard: newest copy wins, files that stream while Explorer pastes, and formatted text. Install it on every PC; earlier releases lack these. The installer has no Authenticode signature, so Windows SmartScreen will warn; check the download against the attached `.sha256` file. Quit Hopboard from its system tray menu before upgrading.
+
+The Android ARM64 APK (`Hopboard-Android-arm64.apk`) is attached to the same release. It is signed with the owner release key, certificate SHA-256 `9a2bdc94972cbb1a2d58030056c5cf891bc97969c47d6e91ee96fcdcab305ecd`, and installs as `io.github.azrinfreeman.hopboard` (version 0.3.0, versionCode 2015). Verify the file against its `.sha256` and the certificate fingerprint. Physical-device checks are not complete, so treat Android as a preview.
+
+The release files were rebuilt after the security changes below, under the same 0.3.0 tag and file names. Because the version number did not change, copies already on 0.3.0 are not offered the rebuild by the in-app updater; reinstall manually to get it.
+
+## Security hardening in 0.3.0
+
+- **Android share confirmation:** text shared into Hopboard from another app asks for confirmation before it is sent.
+- **Clipboard formatting:** HTML and RTF are checked and dropped when they could leak credentials; plain text is kept.
+- **File names:** Unicode and bidirectional-control tricks in received file names are rejected.
+- **Pairing limits:** declining or timing out a request ends the invitation, so the same code or QR cannot be reused. Each address may start at most 6 pairing exchanges per invitation (30 in total).
+- **Transfer limits:** one device can hold at most half of the host's transfer tickets.
+- **Streamed files:** the final byte is withheld until the file hash passes, so a paste cannot complete with unverified data.
+- **Risky file types:** received files such as `.exe`, `.lnk`, `.url`, `.bat`, `.ps1`, `.msi` and `.dll` show a warning banner. Transfers are not blocked. The list is in `lib/core/content.dart`.
+- **Android backup:** the encrypted identity and pairings are excluded from cloud backup and device-to-device transfer.
+- **Uninstall:** the installer also removes the downloaded-updates cache. The pairing identity is kept so a reinstall keeps its pairings.
+
+Known gap: a flood of connections that start but never finish the TLS handshake can still tie up sockets on the local network. Dart does not allow closing them safely.
+
+## Signed updates (Windows)
+
+The **Update** action downloads from this repository's latest release and installs only if the release carries `Hopboard-Setup-<version>-x64.exe.manifest.json` and `.manifest.sig`, and the signature verifies against the RSA-3072 public key pinned in `UpdateService.updateSigningPublicKeyPem` (`lib/platform/update_service.dart`). The manifest records the version, file name, size and SHA-256 of the installer. The private key is held offline outside the repository; losing it means no future update would be accepted by installed copies. Release steps are in [docs/RELEASING.md](docs/RELEASING.md). This protects update integrity; it is not Windows code signing.
 
 ## Seamless clipboard on Windows
 
@@ -45,15 +67,15 @@ Copy on one Windows PC and paste on another with **Ctrl+V**, without opening Hop
 - **Formatted text.** HTML and RTF formatting travels with plain text (up to 256 KiB).
 - **If the sender disconnects mid-paste,** the paste fails with Explorer's normal read error instead of hanging. A fresh copy is needed once it reconnects.
 
-Limits: every PC needs this build (the 0.2.1 installer has none of it); formatted text needs the sender, host and receiver updated; Office-native formats are not carried; browsers copy a video as its address, which is shared as text. Android cannot read the clipboard in the background, so it is unchanged. See [IMPLEMENTATION.md](IMPLEMENTATION.md#seamless-clipboard-newest-copy-wins-virtual-files-formatted-text) and [VALIDATION.md](VALIDATION.md) for details and what was tested.
+Limits: every PC needs 0.3.0 (earlier installers have none of it); formatted text needs the sender, host and receiver updated; Office-native formats are not carried; browsers copy a video as its address, which is shared as text. Android cannot read the clipboard in the background, so it is unchanged.
 
 ## Windows images, files and folders
 
-Version 0.2.0 supports clipboard images, mixed text/image copies, Explorer files and folders, file/folder pickers, drag onto the window, and explicit ZIP packaging. Automatic image and file sharing each require separate consent. Use **Copy**, rather than Cut, for Explorer transfers. Windows clipboard integration passes local automated checks; two-PC Explorer/Office paste remains unverified.
+Hopboard supports clipboard images, mixed text/image copies, Explorer files and folders, file/folder pickers, drag onto the window, and explicit ZIP packaging. Automatic image and file sharing each require separate consent. Use **Copy**, rather than Cut, for Explorer transfers. Windows clipboard integration passes local automated checks; two-PC Explorer/Office paste remains unverified.
 
-Files up to 256 MiB download automatically when file consent and automatic sharing are enabled; larger items wait for **Download**. In the current Windows source, received files of any size are instead on the clipboard at once and stream while Explorer pastes them; smaller ones prefetch and become ordinary files (see [IMPLEMENTATION.md](IMPLEMENTATION.md#seamless-clipboard-newest-copy-wins-virtual-files-formatted-text)). The item limit defaults to 4 GiB and can be reduced. Files are verified before **Ready to paste** appears. Phone image/file workflows remain pending.
+Files up to 256 MiB download automatically when file consent and automatic sharing are enabled; larger items wait for **Download**. In 0.3.0, received files of any size are instead on the clipboard at once and stream while Explorer pastes them; smaller ones prefetch and become ordinary files. The item limit defaults to 4 GiB and can be reduced. Files are verified before **Ready to paste** appears. Phone image/file workflows remain pending.
 
-## What's new in 0.1.2
+## Everyday safeguards
 
 - **Renamed to Hopboard** and a redesigned interface with light, dark and high-contrast themes.
 - **Private copies stay private:** text that a password manager marks as private is never sent automatically. Text Hopboard places on the Windows clipboard is kept out of Win+V history and Cloud Clipboard.
@@ -66,23 +88,23 @@ Files up to 256 MiB download automatically when file consent and automatic shari
 
 ### Windows
 
-Download and run `Hopboard-Setup-<version>-x64.exe` from the releases page for a per-user installation with a Start menu shortcut, optional desktop shortcut, and uninstaller. It includes the required x64 Visual C++ runtime DLLs and does not require administrator rights. Quit any running copy from its tray menu before installing or updating. The installer and application are unsigned.
+Download and run `Hopboard-Setup-<version>-x64.exe` from the releases page for a per-user installation with a Start menu shortcut, optional desktop shortcut, and uninstaller. It includes the required x64 Visual C++ runtime DLLs and does not require administrator rights. Quit any running copy from its tray menu before installing or updating. The installer and application have no Authenticode signature.
 
 For a portable copy:
 
-Extract `dist/Hopboard-Windows-x64.zip` and run `local_clipboard.exe` from the extracted folder. Keep its DLLs and `data` folder together. The app is unsigned. A machine without the Visual C++ runtime may need Microsoft's [x64 redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist).
+Extract `dist/Hopboard-Windows-x64.zip` and run `local_clipboard.exe` from the extracted folder. Keep its DLLs and `data` folder together. The app has no Authenticode signature. A machine without the Visual C++ runtime may need Microsoft's [x64 redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist).
 
-When updating, choose **Quit** from the existing app's tray menu before replacing its folder or opening the new version. Closing its window alone keeps the older process running. Use version 0.1.2 or later on both devices for six-digit pairing; use 0.2.0-dev on both to share images and files.
+When updating, choose **Quit** from the existing app's tray menu before replacing its folder or opening the new version. Closing its window alone keeps the older process running. Run 0.3.0 on every device: older builds lack six-digit pairing, image and file sharing, or the seamless clipboard.
 
 1. Connect both devices to the same Wi-Fi. Prefer the Windows computer as host.
 2. Select the Wi-Fi interface and choose **Start session**. Allow inbound access on **Private networks** if Windows asks. Avoid guest Wi-Fi with device isolation.
 3. Choose **Add device**. On the other PC choose **Enter pairing code**, select the nearby host, and type or paste its six digits (shown like `001 234`). Accept the device on the host. Phones can use **Scan pairing code** or the same six-digit flow.
 4. Open **Clipboard** on **both Windows PCs**. Enable **Automatic clipboard sharing** on each and accept the consent notice. This shares each PC's new copies with trusted session members and lets incoming text replace its clipboard. A receiver with sharing off also offers **Enable automatic sharing** beside received text.
-5. On Android rc.4, select text in another app and choose **Share, then Hopboard**, or enable **Receive in the background** and tap **Send to PC** in the connection notification after copying. **Paste & Send** and typed text still work. See [Android sending](docs/tutorial/android-send.md) for setup and limits. PC-to-phone automatic receive requires automatic sharing and background receive; a phone can host while it stays in the foreground.
+5. On Android, select text in another app and choose **Share, then Hopboard**, or enable **Receive in the background** and tap **Send to PC** in the connection notification after copying. **Paste & Send** and typed text still work. See [Android sending](docs/tutorial/android-send.md) for setup and limits. PC-to-phone automatic receive requires automatic sharing and background receive; a phone can host while it stays in the foreground.
 
 After enabling both PCs, copy fresh text on the host. On the connected PC, switch to Notepad or another destination app and press **Ctrl+V**. You do not need to open Hopboard or click Copy for each item. Hopboard shows **Ready to paste — press Ctrl+V in another app** after confirming the clipboard write; **Copy again** is optional recovery. Hopboard never pastes into an app for you.
 
-Enabling sharing preserves the currently displayed item and pre-existing clipboard; test with a new host copy. Starting the app does not send old clipboard content. Private copies, local copies made while sharing was inactive, unresolved simultaneous sends, and failed writes can still need deliberate **Copy** or conflict resolution. Read the displayed reason before replacing local content. In the current source, **Newest copy always wins** (on by default) lets a live copy from another device replace these protected local copies too; only a copied invitation stays protected. Pausing or changing automatic mode clears the previous ready indication; the next eligible fresh copy can become ready again.
+Enabling sharing preserves the currently displayed item and pre-existing clipboard; test with a new host copy. Starting the app does not send old clipboard content. Private copies, local copies made while sharing was inactive, unresolved simultaneous sends, and failed writes can still need deliberate **Copy** or conflict resolution. Read the displayed reason before replacing local content. On Windows, **Newest copy always wins** (on by default) lets a live copy from another device replace these protected local copies too; only a copied invitation stays protected. Pausing or changing automatic mode clears the previous ready indication; the next eligible fresh copy can become ready again.
 
 Closing the Windows window leaves the app in the tray. Right-click the tray icon to open, pause, or quit. A second launch reopens the existing window. **Pause sharing** stops automatic capture and clipboard replacement. **Quit** stops the process and hosting. When incoming text replaces your clipboard while the window is not in front, a quiet tray notice names the sending device; it never shows the text.
 
@@ -92,7 +114,7 @@ PC-to-PC pairing needs no camera or JSON. **Copy code** copies only the six digi
 
 Run `tools/build_android.ps1` to create `dist/Hopboard-Android-arm64.apk` for a modern ARM64 phone. Other architecture builds are in `build/app/outputs/flutter-apk/`. Allow installation from the application used to open the APK. Grant local-network access when joining or hosting; camera access is needed only to scan.
 
-This optimized development APK uses the Android debug signing key. Configure a private release key before distribution or publishing.
+The build script requires an owner-held release key and verifies the signer certificate, package name, version and ARM64-only contents before copying the APK to `dist/`. See the [release-signing tutorial](docs/tutorial/release-signing.md). Without a configured key no APK is produced.
 
 ### iPhone
 
@@ -110,15 +132,15 @@ Phones cannot provide unrestricted background clipboard sharing. Moving a phone 
 
 The app preserves text copied while disconnected or outside the phone app. If it cannot safely replace the clipboard, choose **Use received text** or **Send my text**. Simultaneous sends are resolved explicitly. “Available in app” and “Ready to paste” are separate states.
 
-In the current Windows source, ordinary text already on the clipboard is preserved when connecting or first enabling Automatic sharing. A later fresh remote text copy replaces it automatically; initial session snapshots and duplicate updates do not. Private content, copied invitations, and local edits made while sharing was paused, disconnected or disabled remain protected. A confirmed local send releases protection for that specific copy, so subsequent remote copies can arrive automatically. This follow-up is not included in the published 0.2.0 installer.
+On Windows, ordinary text already on the clipboard is preserved when connecting or first enabling Automatic sharing. A later fresh remote text copy replaces it automatically; initial session snapshots and duplicate updates do not. Private content, copied invitations, and local edits made while sharing was paused, disconnected or disabled remain protected. A confirmed local send releases protection for that specific copy, so subsequent remote copies can arrive automatically.
 
-Automatic capture and clipboard replacement retry temporary clipboard contention for up to five seconds. A successful write is confirmed separately, so a busy confirmation read does not repeat the write or create a false local-copy conflict. Hopboard explains when a local copy is protected, automatic image/file sharing is off, or a file exceeds the automatic download limit. Explorer-copied videos follow the same file limits; larger videos still require **Download**. Install version 0.2.0 to get these recovery changes.
+Automatic capture and clipboard replacement retry temporary clipboard contention for up to five seconds. A successful write is confirmed separately, so a busy confirmation read does not repeat the write or create a false local-copy conflict. Hopboard explains when a local copy is protected, automatic image/file sharing is off, or a file exceeds the automatic download limit. Explorer-copied videos follow the same file limits; larger videos still require **Download**.
 
 Text is limited to 64 KiB in UTF-8 and expires after five minutes. File items expire after fifteen minutes. Expiry and host **Clear** remove shared app state; they do not erase an OS clipboard, pasted copies, or another app's clipboard history. Automatic mode shares with every trusted member: pause before copying private content. Copies that their app marks private, such as passwords from a password manager, are never sent automatically; use **Paste & Send** to share one deliberately. On Windows, items the app places on the clipboard are excluded from Win+V history and Cloud Clipboard. Mobile images/files, history, and cloud sync remain pending.
 
 Windows can share PNG clipboard images and mixed text/image copies, with image previews and manual copying. Images are limited to 16 MiB and 50 megapixels and stay in memory. Received files are written to `%LOCALAPPDATA%\Hopboard\Received` so Explorer can paste them. This private cache is not indexed and received files carry Windows' downloaded-content marker. Retained files count toward a cache limit of twice your item limit, and downloads require at least 1 GiB of free disk space afterward. Files are removed after expiry/clear once the clipboard no longer references them, at most one hour after expiry, and on startup, **Clear received files**, Quit or uninstall. Clearing this cache can invalidate file paths still on your clipboard. ZIP packaging also uses this directory temporarily; source files are never modified and received ZIPs are never extracted automatically.
 
-The Windows Update action uses the internet only when pressed and verifies the release installer before launch; actual installer validation is still required. Remaining device checks are listed in [VALIDATION.md](VALIDATION.md).
+The Windows Update action uses the internet only when pressed and verifies the signed manifest and the installer's SHA-256 before launch; see [Signed updates](#signed-updates-windows).
 
 ## Connection and privacy
 
@@ -149,6 +171,10 @@ flutter test --reporter expanded
 # Package an already-built release without rebuilding:
 ./tools/build_windows_installer.ps1 -SkipBuild
 
+# Sign the installer for the in-app updater (key kept outside the repository).
+# First time only: dart run tools/update_signing.dart generate <key-file>
+dart run tools/update_signing.dart sign <private-key-file> dist/Hopboard-Setup-<version>-x64.exe
+
 # Android SDK platforms 36 and 37.0, build tools 36.0.0, NDK 28.2.13676358.
 # Pass -JavaHome if Flutter cannot find a compatible installed JDK.
 # Configure an owner-held release key first; see docs/tutorial/release-signing.md.
@@ -170,7 +196,7 @@ The unsigned command checks compilation; a signed archive/device run requires pr
 
 ## Status and limits
 
-- Checked on Windows with Flutter 3.47.6: `flutter analyze` is clean, all 126 automated tests excluding the large-transfer test pass, and the Windows release build succeeds. Coverage includes real TLS connections, clipboard races, direct-paste setup and attack cases.
+- Checked on Windows with Flutter 3.47.6: `flutter analyze` is clean, all 176 automated tests pass, and the Windows installer and signed Android APK build. Coverage includes real TLS connections, clipboard races, direct-paste setup and attack cases. The signing command and the rebuilt installer and APK have not been installed or run on physical devices.
 - Not yet verified: physical Android phones, iPhone (source only), and the Windows tray notification and clipboard-privacy checks on a range of password managers.
 - No independent security audit has been done. Treat Hopboard as a learning and portfolio project, not a vetted security product.
 
@@ -180,7 +206,7 @@ The unsigned command checks compilation; a signed archive/device run requires pr
 
 `test/` exercises real pinned TLS loopback sessions and controllable clipboard adapters: message limits, pairing, revocation, ordering, deduplication, rapid copies, pause/resume, reconnection, and clipboard races. `integration_test/windows_smoke_test.dart` exercises native encrypted storage, listener/tray initialization, and UI startup without reading or replacing the user's clipboard.
 
-See [STATUS.md](STATUS.md) for current progress and next steps, and [VALIDATION.md](VALIDATION.md) for verified results and remaining gates.
+See [STATUS.md](STATUS.md) for current progress and next steps.
 
 ## Licence and release identity
 
@@ -188,7 +214,7 @@ Hopboard's original code is available under the [MIT licence](LICENSE). Third-pa
 
 The Android application ID is `io.github.azrinfreeman.hopboard`. Earlier development builds used `dev.localclipboard.local_clipboard`, so the new ID installs as a separate app and does not inherit their pairings. The Kotlin namespace remains unchanged. Release builds require an owner-held key and fail when signing is missing; debug builds remain available. See the [release-signing tutorial](docs/tutorial/release-signing.md).
 
-SignPath Foundation is the selected route to explore for Windows code signing. Eligibility review, application and signing integration remain pending; current Windows installers are unsigned. See [the distribution plan](IMPLEMENTATION.md#31-sign-the-windows-installer).
+SignPath Foundation is the selected route to explore for Windows code signing. Eligibility review, application and signing integration remain pending; current Windows installers have no Authenticode signature (only the update manifest is signed).
 
 ## Code signing policy
 

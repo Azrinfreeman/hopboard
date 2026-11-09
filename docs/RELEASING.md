@@ -6,7 +6,7 @@ Neither platform is ready for a signed consumer release. Android signing support
 
 Follow [the release-signing tutorial](tutorial/release-signing.md) to create and protect your key, configure the private properties file, pin its public certificate fingerprint and build a verified ARM64 APK. Use the same key and stable package ID for upgrades. Do not upload private signing files to a release.
 
-Before publication, complete [the physical-device worksheet](testing/device-test-checklist.md), record results in [VALIDATION.md](../VALIDATION.md), and verify installation and upgrade of the exact candidate bytes. Publish the public certificate fingerprint, APK SHA-256 checksum, supported ABI and honest platform limitations with the eventual release.
+Before publication, test on physical devices and verify installation and upgrade of the exact candidate bytes. Publish the public certificate fingerprint, APK SHA-256 checksum, supported ABI and honest platform limitations with the eventual release.
 
 ## Code signing policy
 
@@ -31,7 +31,8 @@ Hopboard sends shared content to the trusted session members chosen by the user.
 2. Run `flutter analyze --no-pub` and `flutter test --no-pub --exclude-tags large`. Rerun the large relay when transport changes require it.
 3. Build the Windows installer with `tools/build_windows_installer.ps1`; build Android with the certificate-pinned script described above. Verify hashes and, once Windows signing is configured, Authenticode signatures.
 4. Complete the relevant device acceptance rows against those exact files. A compiled or correctly signed binary alone is not consumer validation.
-5. Review the final source diff, MIT/third-party notices, release notes, public certificate fingerprint, checksums and remaining limitations. Commit/push/tag/release only with the owner's publication authorization.
+5. Sign the Windows installer for the in-app updater: `dart run tools/update_signing.dart sign <private-key-file> dist/Hopboard-Setup-<version>-x64.exe`, then upload the generated `.manifest.json` and `.manifest.sig` with the installer. The app refuses updates without a valid signature from the key pinned in `UpdateService.updateSigningPublicKeyPem`. First-time setup: `dart run tools/update_signing.dart generate <path-outside-repo>`, back the private key up offline, and pin the printed public key before building that release. Builds without a pinned key cannot update.
+6. Review the final source diff, MIT/third-party notices, release notes, public certificate fingerprint, checksums and remaining limitations. Commit/push/tag/release only with the owner's publication authorization.
 6. After publication, download the actual assets, verify them again, and run the updater acceptance row. If a release fails, retain the signing key and increase the version for the corrective release; do not reuse a version with different bytes.
 
-The full distribution gates remain in [IMPLEMENTATION.md](../IMPLEMENTATION.md#phase-3--distribution-and-documentation). No release, certificate request or external application has been submitted in this session.
+No SignPath certificate request or application has been submitted.
