@@ -1,6 +1,6 @@
 # Project status
 
-Current source: **0.3.0+15**. Published: Windows installer and release-signed Android ARM64 APK on the [v0.3.0 release](https://github.com/Azrinfreeman/hopboard/releases/tag/v0.3.0).
+Current source: **0.3.1+16**. Published: Windows installer and release-signed Android ARM64 APK on the [v0.3.1 release](https://github.com/Azrinfreeman/hopboard/releases/tag/v0.3.1).
 
 ## Done
 

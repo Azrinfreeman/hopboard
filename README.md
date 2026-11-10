@@ -29,17 +29,17 @@ Hopboard moves text between your own devices over your local network. It needs n
 - **Clipboard privacy:** copies that password managers mark as private are never sent automatically.
 - **Tested:** automated tests cover real TLS connections and attack cases such as spoofed hosts, guessed codes and connection floods.
 
-Built with Flutter and Dart for Windows and Android (iPhone source included, not yet built). Current source is 0.3.0+15: Windows seamless clipboard, a security-hardening pass, and signed in-app updates. The 0.3.0 release carries a Windows installer and a release-signed Android ARM64 APK. The owner confirmed Android D20 sending works; a [background callback diagnostic](docs/tutorial/android-send.md#try-the-d21-callback-test) exists for the D21 experiment. Automatic background sending still needs that device result and a later overlay/focus check. Physical-device checks are still incomplete. This code has not had an independent security audit. The Windows installer has no Authenticode signature, so Windows SmartScreen will warn when you run it; its update manifest is signed separately (see [Signed updates](#signed-updates-windows)).
+Built with Flutter and Dart for Windows and Android (iPhone source included, not yet built). Current source is 0.3.1+16: Windows seamless clipboard, a security-hardening pass, and signed in-app updates. The 0.3.1 release carries a Windows installer and a release-signed Android ARM64 APK. The owner confirmed Android D20 sending works; a [background callback diagnostic](docs/tutorial/android-send.md#try-the-d21-callback-test) exists for the D21 experiment. Automatic background sending still needs that device result and a later overlay/focus check. Physical-device checks are still incomplete. This code has not had an independent security audit. The Windows installer has no Authenticode signature, so Windows SmartScreen will warn when you run it; its update manifest is signed separately (see [Signed updates](#signed-updates-windows)).
 
 ## Download
 
-Get the Windows installer from the [0.3.0 release](https://github.com/Azrinfreeman/hopboard/releases/tag/v0.3.0). It adds the seamless clipboard: newest copy wins, files that stream while Explorer pastes, and formatted text. Install it on every PC; earlier releases lack these. The installer has no Authenticode signature, so Windows SmartScreen will warn; check the download against the attached `.sha256` file. Quit Hopboard from its system tray menu before upgrading.
+Get the Windows installer from the [0.3.1 release](https://github.com/Azrinfreeman/hopboard/releases/tag/v0.3.1). It includes the seamless clipboard: newest copy wins, files that stream while Explorer pastes, and formatted text. Install it on every PC; earlier releases lack these. The installer has no Authenticode signature, so Windows SmartScreen will warn; check the download against the attached `.sha256` file. Quit Hopboard from its system tray menu before upgrading.
 
-The Android ARM64 APK (`Hopboard-Android-arm64.apk`) is attached to the same release. It is signed with the owner release key, certificate SHA-256 `9a2bdc94972cbb1a2d58030056c5cf891bc97969c47d6e91ee96fcdcab305ecd`, and installs as `io.github.azrinfreeman.hopboard` (version 0.3.0, versionCode 2015). Verify the file against its `.sha256` and the certificate fingerprint. Physical-device checks are not complete, so treat Android as a preview.
+The Android ARM64 APK (`Hopboard-Android-arm64.apk`) is attached to the same release. It is signed with the owner release key, certificate SHA-256 `9a2bdc94972cbb1a2d58030056c5cf891bc97969c47d6e91ee96fcdcab305ecd`, and installs as `io.github.azrinfreeman.hopboard` (version 0.3.1, versionCode 2016). Verify the file against its `.sha256` and the certificate fingerprint. Physical-device checks are not complete, so treat Android as a preview.
 
-The release files were rebuilt after the security changes below, under the same 0.3.0 tag and file names. Because the version number did not change, copies already on 0.3.0 are not offered the rebuild by the in-app updater; reinstall manually to get it.
+0.3.1 adds the security changes below and is the first release built with the update-signing key pinned in the app. Earlier installs, including any 0.3.0 installed before this release, cannot verify updates, so install 0.3.1 manually once; later updates can then happen in the app.
 
-## Security hardening in 0.3.0
+## Security hardening in 0.3.1
 
 - **Android share confirmation:** text shared into Hopboard from another app asks for confirmation before it is sent.
 - **Clipboard formatting:** HTML and RTF are checked and dropped when they could leak credentials; plain text is kept.
@@ -94,7 +94,7 @@ For a portable copy:
 
 Extract `dist/Hopboard-Windows-x64.zip` and run `local_clipboard.exe` from the extracted folder. Keep its DLLs and `data` folder together. The app has no Authenticode signature. A machine without the Visual C++ runtime may need Microsoft's [x64 redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist).
 
-When updating, choose **Quit** from the existing app's tray menu before replacing its folder or opening the new version. Closing its window alone keeps the older process running. Run 0.3.0 on every device: older builds lack six-digit pairing, image and file sharing, or the seamless clipboard.
+When updating, choose **Quit** from the existing app's tray menu before replacing its folder or opening the new version. Closing its window alone keeps the older process running. Run 0.3.0 or later on every device: older builds lack six-digit pairing, image and file sharing, or the seamless clipboard.
 
 1. Connect both devices to the same Wi-Fi. Prefer the Windows computer as host.
 2. Select the Wi-Fi interface and choose **Start session**. Allow inbound access on **Private networks** if Windows asks. Avoid guest Wi-Fi with device isolation.
