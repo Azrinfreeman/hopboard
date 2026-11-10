@@ -194,10 +194,19 @@ open ios/Runner.xcworkspace
 
 The unsigned command checks compilation; a signed archive/device run requires provisioning. iOS integration has not been compiled in this Windows environment.
 
+## Roadmap and next milestones
+
+- [ ] **Android file & image sharing:** file/image pickers, system share target for media, and receiving files into the local application cache.
+- [ ] **In-app update verification:** verify end-to-end update delivery, RSA-3072 signature check, and installer launch from an existing 0.3.1 client when 0.3.2 is published.
+- [ ] **Windows Authenticode code signing:** complete SignPath Foundation open-source signing integration to eliminate Windows SmartScreen warnings.
+- [ ] **iOS / iPhone support:** build, test on a physical iPhone, and implement an iOS Share Extension to handle iOS background clipboard limits.
+- [ ] **Endurance & multi-network stress testing:** prolonged session stability, Wi-Fi reconnection cycles, and concurrent multi-device transfers.
+
 ## Status and limits
 
-- Checked on Windows with Flutter 3.47.6: `flutter analyze` is clean, all 176 automated tests pass, and the Windows installer and signed Android APK build. Coverage includes real TLS connections, clipboard races, direct-paste setup and attack cases. The signing command and the rebuilt installer and APK have not been installed or run on physical devices.
-- Not yet verified: physical Android phones, iPhone (source only), and the Windows tray notification and clipboard-privacy checks on a range of password managers.
+- Checked on Windows with Flutter 3.47.6: `flutter analyze` is clean, all 176 automated tests pass, and the Windows installer and signed Android APK build. Coverage includes real TLS connections, clipboard races, direct-paste setup and attack cases.
+- Physical device testing: 0.3.1 installer and Android APK have been verified on physical devices (Windows and Android).
+- Not yet verified: iPhone (source only), and clipboard-privacy checks on a wider range of third-party password managers.
 - No independent security audit has been done. Treat Hopboard as a learning and portfolio project, not a vetted security product.
 
 ## Code and verification

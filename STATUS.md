@@ -14,15 +14,20 @@ Current source: **0.3.1+16**. Published: Windows installer and release-signed An
 
 Automated tests (176) cover the protocol, real loopback TLS, controller races and widget layouts.
 
-## Not verified
+## Physical testing
 
-- Two-PC Explorer and Office paste, transfer over real Wi-Fi with disconnects, disk full during a write, clipboard contention and long-running endurance.
-- Android background callback counts, background receive endurance and locked-screen cases on real devices.
-- The rebuilt installer and APK on physical devices.
+- Windows 0.3.1 installer and Android 0.3.1 release APK verified on physical hardware.
+
+## Remaining & unverified
+
+- Multi-PC continuous endurance, disk-full edge cases, and broad multi-device transfers.
+- Extended Android background receive endurance across varied OEM battery optimizations.
+- iPhone platform integration (source exists, needs Mac/Xcode and real device).
 - No independent security audit. The Windows installer has no Authenticode signature, so SmartScreen warns.
 
-## Next
+## Roadmap & next milestones
 
-1. Android image and file sharing (pickers, share target, receive to app cache).
-2. iPhone support (needs a Mac, Xcode and a real iPhone).
-3. Windows code signing (SignPath) and an iOS share extension.
+1. **Android file and image sharing:** pickers, system share target, and receiving to app cache.
+2. **In-app update cycle:** verify end-to-end signed update workflow when the next version (0.3.2) is published.
+3. **Windows Authenticode code signing:** complete SignPath application to remove SmartScreen warnings.
+4. **iOS / iPhone support:** Mac build pipeline, iPhone testing, and iOS share extension.
